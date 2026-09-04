@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.pyo
+build/
+.gradle/
+*.log
+venv/
+.flet/

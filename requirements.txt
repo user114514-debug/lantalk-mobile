@@ -1,0 +1,5 @@
+flet==0.86.5
+flet-audio==0.86.1
+psutil>=5.9.0
+# 桌面调试运行 mobile_main.py 时需要（打 APK 不需要，安卓走原生 pyjnius）：
+sounddevice>=0.4.6
