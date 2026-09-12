@@ -116,7 +116,7 @@ echo           pip install "flet==0.86.5" "flet-audio>=0.86.0" "flet-android-not
 echo.
 echo       - name: Generate Flutter project (first build)
 echo         run: ^|
-echo           flet build apk --module-name mobile_main --project "LanTalk" --org "com.lantalk" --product "lantalk" --build-number "1" --build-version "3.0.0" --clear-cache
+echo           flet build apk --module-name mobile_main --project "LanTalk" --org "com.lantalk" --product "lantalk" --build-number "3" --build-version "3.0.0" --clear-cache
 echo         continue-on-error: true
 echo.
 echo       - name: Patch Flutter project for native notifications
@@ -128,7 +128,7 @@ echo         run: ^|
 echo           cd build/flutter
 echo           export SERIOUS_PYTHON_SITE_PACKAGES="$GITHUB_WORKSPACE/build/site-packages"
 echo           export SERIOUS_PYTHON_APP="$GITHUB_WORKSPACE/build/python-app"
-echo           flutter build apk --release
+echo           flutter build apk --release --build-name "3.0.0" --build-number "3"
 echo.
 echo       - name: Upload APK
 echo         uses: actions/upload-artifact@v4

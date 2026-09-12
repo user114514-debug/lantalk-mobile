@@ -1,4 +1,4 @@
-# mobile_main.py - LanTalk 移动端（安卓）入口  v1.0.0 Release
+﻿# mobile_main.py - LanTalk 移动端（安卓）入口  v1.0.0 Release
 #
 # ============================================================
 #  重要约束声明：本文件为【新增】文件，原有项目【零改动】。
@@ -2478,19 +2478,10 @@ class MobileChatApp:
             self._log(f"_ui error: {e}")
 
 
-async def main(page):
-    app = MobileChatApp()
-    await app.setup(page)
-
-
-if __name__ == "__main__":
-    try:
-        ft.run(main)
-    except AttributeError:
-        ft.app(target=main)
-
-
 # ==================== 新增：Android原生Photo Picker接入（增量开发，不修改原有代码）====================
+# 注意：本函数必须定义在 `if __name__ == "__main__": ft.run(main)` 阻塞点之前，
+# 否则安卓上 ft.run 进入事件循环后，后面的定义永远不会执行，点击时会报
+# NameError: name 'pick_photo_native' is not defined。
 def pick_photo_native(app, path_display, send_btn, dlg):
     """
     使用Android原生Photo Picker选择图片，不可用时自动降级到原有Flet FilePicker/tkinter。
@@ -2532,6 +2523,7 @@ def pick_photo_native(app, path_display, send_btn, dlg):
 # ======================================================================
 # 崩溃日志模块初始化（追加代码，不修改原有代码）
 # 全局捕获未处理异常，崩溃时自动生成本地日志文件
+# 同样必须放在 ft.run(main) 阻塞点之前，否则安卓上不会执行。
 # ======================================================================
 try:
     from crash_logger import CrashLogger
@@ -2545,3 +2537,212 @@ try:
     _crash_logger.install()
 except Exception as _crash_init_error:
     print(f"[CrashLogger] 初始化失败: {_crash_init_error}")
+
+
+
+# ======================================================================
+# 连接看门狗（新增，不修改原有代码）：修复 WiFi/移动网络切换后 TCP 僵死、
+# 无法自动重连的问题。通过包装 show_chat，在首次进入聊天页及每次重连成功
+# 重建页面后幂等启动看门狗；原有 show_chat 逻辑一行未改，只是前后加钩子。
+# ======================================================================
+try:
+    from connection_watchdog import ConnectionWatchdog
+
+    _orig_show_chat = MobileChatApp.show_chat
+
+    async def _show_chat_with_watchdog(self, *args, **kwargs):
+        _result = await _orig_show_chat(self, *args, **kwargs)
+        try:
+            # 30秒收不到任何 pong 判定僵死，每5秒检查一次；幂等，重复调用安全
+            ConnectionWatchdog.start_for_app(self, timeout=30.0, check_interval=5.0)
+        except Exception as _wd_start_err:
+            print(f"[ConnWatchdog] start failed(ignored): {_wd_start_err}")
+        return _result
+
+    MobileChatApp.show_chat = _show_chat_with_watchdog
+except Exception as _watchdog_hook_error:
+    print(f"[ConnWatchdog] hook failed(ignored): {_watchdog_hook_error}")
+
+
+# ======================================================================
+# 语音录音权限（新增，不修改原有代码）：修复安卓上“一点语音就闪退”。
+# 根因：原 audio_backend 申请运行时权限用的 Activity 类名在 serious_python
+# 打包下不存在，RECORD_AUDIO 从未真正申请；无权限时 AudioRecord.startRecording()
+# 在 native 层直接崩溃（Python try 拦不住）。这里在“主动发起语音”和“接听来电”
+# 两个入口前，用正确的 Activity 类名申请录音权限，授权后再走原逻辑。
+# ======================================================================
+try:
+    import android_perms as _android_perms
+
+    _orig_start_voice = MobileChatApp._start_voice
+
+    def _start_voice_with_perm(self, e):
+        try:
+            _need = _android_perms.is_android() and not _android_perms.has_record_permission()
+        except Exception:
+            _need = False
+        if not _need:
+            return _orig_start_voice(self, e)
+
+        def _perm_worker():
+            _ok = False
+            try:
+                _ok = _android_perms.request_record_permission()
+            except Exception:
+                _ok = False
+
+            def _cont():
+                if _ok:
+                    try:
+                        _orig_start_voice(self, e)
+                    except Exception as _ex:
+                        self._log(f"start voice after perm failed: {_ex}")
+                else:
+                    try:
+                        self._append_system(t("需要麦克风权限才能语音通话，请在系统设置中允许"))
+                    except Exception:
+                        pass
+            try:
+                self._ui(_cont)
+            except Exception:
+                pass
+
+        threading.Thread(target=_perm_worker, daemon=True).start()
+
+    MobileChatApp._start_voice = _start_voice_with_perm
+
+    _orig_accept_voice = MobileChatApp.accept_voice_call
+
+    async def _accept_voice_with_perm(self, *a, **k):
+        _need = False
+        try:
+            _need = _android_perms.is_android() and not _android_perms.has_record_permission()
+        except Exception:
+            _need = False
+        if _need:
+            try:
+                _ok = await self._run_in_thread(lambda: _android_perms.request_record_permission())
+            except Exception:
+                _ok = False
+            if not _ok:
+                try:
+                    self._append_system(t("需要麦克风权限才能接听语音通话"))
+                except Exception:
+                    pass
+                return
+        return await _orig_accept_voice(self, *a, **k)
+
+    MobileChatApp.accept_voice_call = _accept_voice_with_perm
+except Exception as _voice_perm_hook_err:
+    print(f"[VoicePerm] hook failed(ignored): {_voice_perm_hook_err}")
+
+
+# ======================================================================
+# 深色主题换肤挂载（新增，不修改原有UI代码）：
+# 原界面颜色全部硬编码为浅色，theme_mode=DARK 对它们无效。这里通过包装在
+# “进入聊天页 / 切换主题 / 构建每条消息气泡 / 打开语音浮层与设置框”几个时机，
+# 调用 dark_theme 控件树换肤层；切回亮色时由换肤层按记录的原值还原。
+# ======================================================================
+try:
+    import dark_theme as _dt
+
+    def _is_dark_now(app):
+        _mode = getattr(app, "_theme_mode", "system")
+        return _mode == "dark" or (_mode == "system" and _dt.is_system_dark())
+
+    # 1) 进入/重建聊天页后整体换肤（此时 show_chat 已被看门狗包装，再包一层）
+    _prev_show_chat = MobileChatApp.show_chat
+
+    async def _show_chat_themed(self, *a, **k):
+        _r = await _prev_show_chat(self, *a, **k)
+        try:
+            _dt.skin_app(self, update=True)
+        except Exception as _te:
+            self._log(f"dark theme on show_chat failed: {_te}")
+        return _r
+    MobileChatApp.show_chat = _show_chat_themed
+
+    # 2) 每条消息/文件/语音邀请气泡构建后按当前主题换肤（保证深色下新消息也深色）
+    def _wrap_bubble(_orig_name):
+        _orig = getattr(MobileChatApp, _orig_name)
+
+        def _w(self, *a, **k):
+            _ctrl = _orig(self, *a, **k)
+            try:
+                if _ctrl is not None and _is_dark_now(self):
+                    _dt.skin_control(_ctrl, True)
+            except Exception:
+                pass
+            return _ctrl
+        return _w
+
+    for _bn in ("_build_msg_bubble", "_build_file_bubble", "_build_voice_invite",
+                "_build_voice_overlay"):
+        if hasattr(MobileChatApp, _bn):
+            setattr(MobileChatApp, _bn, _wrap_bubble(_bn))
+
+    # 3) 切换主题后立即整体换肤/还原
+    _orig_switch_theme = MobileChatApp._switch_theme
+
+    def _switch_theme_themed(self, mode):
+        _r = _orig_switch_theme(self, mode)
+        try:
+            _dt.skin_app(self, update=True)
+        except Exception:
+            pass
+        return _r
+    MobileChatApp._switch_theme = _switch_theme_themed
+
+    # 4) 打开设置对话框后对其换肤
+    _orig_open_settings = MobileChatApp._open_settings
+
+    def _open_settings_themed(self, e):
+        _r = _orig_open_settings(self, e)
+        try:
+            _dt.skin_app(self, update=True)
+        except Exception:
+            pass
+        return _r
+    MobileChatApp._open_settings = _open_settings_themed
+except Exception as _theme_hook_err:
+    print(f"[DarkTheme] hook failed(ignored): {_theme_hook_err}")
+
+
+# ======================================================================
+# 崩溃提示 + 一键导出日志弹窗（新增，不修改原有代码）：
+# 1) 包装已安装的 CrashLogger.log_crash，运行时崩溃best-effort弹窗；
+# 2) 每次进入聊天页检测“上次未读的崩溃日志”，真闪退后下次启动也能补弹。
+# ======================================================================
+try:
+    from crash_dialog import crash_dialog_manager as _cdm
+
+    _CURRENT_APP = None
+    try:
+        _cdm.attach(_crash_logger, lambda: globals().get("_CURRENT_APP"))
+    except Exception as _cdm_attach_err:
+        print(f"[CrashDialog] attach failed(ignored): {_cdm_attach_err}")
+
+    _show_chat_before_cdm = MobileChatApp.show_chat
+
+    async def _show_chat_crash_dialog(self, *a, **k):
+        globals()["_CURRENT_APP"] = self
+        _r = await _show_chat_before_cdm(self, *a, **k)
+        try:
+            _cdm.check_previous_crash()
+        except Exception:
+            pass
+        return _r
+    MobileChatApp.show_chat = _show_chat_crash_dialog
+except Exception as _crash_dialog_hook_err:
+    print(f"[CrashDialog] hook failed(ignored): {_crash_dialog_hook_err}")
+
+async def main(page):
+    app = MobileChatApp()
+    await app.setup(page)
+
+
+if __name__ == "__main__":
+    try:
+        ft.run(main)
+    except AttributeError:
+        ft.app(target=main)
