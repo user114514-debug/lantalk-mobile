@@ -53,21 +53,34 @@ class VoiceCall:
         self._stop_event = threading.Event()
         self.last_error = ""
 
-    def _is_ipv6(self):
+    def _detect_ipv6(self):
+        """检测服务器地址是否应使用IPv6 socket。
+        1. 字面量IPv6地址 → True
+        2. 域名 → 解析看是否有AAAA记录（有则用IPv6）
+        3. 字面量IPv4或解析失败 → False
+        """
         try:
             socket.inet_pton(socket.AF_INET6, self.server_ip)
             return True
         except (socket.error, OSError):
+            pass
+        # 不是字面量IPv6，尝试域名解析
+        try:
+            infos = socket.getaddrinfo(self.server_ip, None, socket.AF_INET6)
+            return len(infos) > 0
+        except Exception:
             return False
 
     def bind_socket(self):
-        """创建UDP socket并绑定本地端口，返回端口号（避免临时socket竞态）。"""
-        if self._is_ipv6():
+        """创建UDP socket并绑定本地端口，返回端口号（避免临时socket竞态）。
+        首次调用时缓存IPv6检测结果，避免每次发包都重复DNS查询。"""
+        self._ipv6 = self._detect_ipv6()
+        if self._ipv6:
             self.sock = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
         else:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        if self._is_ipv6():
+        if self._ipv6:
             self.sock.bind(("::", 0))
         else:
             self.sock.bind(("0.0.0.0", 0))
@@ -198,7 +211,7 @@ class VoiceCall:
                 if not data:
                     continue
                 packet = room_hdr + struct.pack("!I", self._seq) + data
-                if self._is_ipv6():
+                if getattr(self, "_ipv6", False):
                     self.sock.sendto(packet, (self.server_ip, self.server_port, 0, 0))
                 else:
                     self.sock.sendto(packet, (self.server_ip, self.server_port))

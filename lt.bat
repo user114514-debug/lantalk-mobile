@@ -112,18 +112,27 @@ echo.
 echo       - name: Install Flet and dependencies
 echo         run: ^|
 echo           python -m pip install --upgrade pip
-echo           pip install "flet==0.86.5" "flet-audio>=0.86.0" "pyjnius>=1.6.1"
+echo           pip install "flet==0.86.5" "flet-audio>=0.86.0" "flet-android-notifications>=0.11.0" "cryptography>=42.0.0" "pyjnius>=1.6.1"
 echo.
-echo       - name: Build APK
+echo       - name: Generate Flutter project (first build)
 echo         run: ^|
-echo           flet build apk --module-name mobile_main --project "LanTalk" --org "com.lantalk" --product "lantalk" --build-number "1" --build-version "2.8.5" --clear-cache
+echo           flet build apk --module-name mobile_main --project "LanTalk" --org "com.lantalk" --product "lantalk" --build-number "1" --build-version "3.0.0" --clear-cache
+echo         continue-on-error: true
+echo.
+echo       - name: Patch Flutter project for native notifications
+echo         run: ^|
+echo           flet-android-notifications-patch --project-root build/flutter
+echo.
+echo       - name: Build patched APK
+echo         run: ^|
+echo           cd build/flutter
+echo           flutter build apk --release
 echo.
 echo       - name: Upload APK
 echo         uses: actions/upload-artifact@v4
 echo         with:
 echo           name: lantalk-apk
-echo           path: build/apk/*.apk
-    ) > .github\workflows\build-apk.yml
+echo           path: build/flutter/build/app/outputs/flutter-apk/app-release.apk
     echo   已创建 build-apk.yml（含 flet-audio、pyjnius）
 ) else (
     echo   build-apk.yml: 存在
@@ -139,7 +148,7 @@ if not exist .git (
     echo   Git 仓库已存在
 )
 git add .
-git commit -m "LanTalk mobile v2.8.5 - build APK" >nul 2>&1
+git commit -m "LanTalk mobile v3.0.0 - build APK" >nul 2>&1
 if errorlevel 1 (
     echo   没有新的更改需要提交
 ) else (
@@ -185,3 +194,4 @@ echo.
 echo   按任意键打开 Actions 页面...
 pause >nul
 start https://github.com/user114514-debug/lantalk-mobile/actions
+

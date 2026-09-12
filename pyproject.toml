@@ -1,19 +1,27 @@
 [project]
 name = "lantalk"
-version = "2.8.5"
+version = "3.0.0"
 description = "LanTalk mobile client"
 # Flet 0.86 起，音频控件 ft.Audio 对应的 Flutter 插件 flet_audio
 # 必须在 dependencies 中声明，构建 APK 时才会被打包（旧的 --include-packages 参数已移除）
 dependencies = [
     "flet==0.86.5",
     "flet-audio>=0.86.0",
+    "flet-android-notifications>=0.11.0",
     "pyjnius>=1.6.1",
+    "psutil>=5.9.0",
 ]
 
 [tool.flet.organization]
 org = "com.lantalk"
 
+# 应用图标背景色（图标本身已有不透明背景，这里用于自适应图标蒙层/不支持透明的平台）
+[tool.flet]
+icon_background = "#06B6D4"
+
 [tool.flet.android]
+# Android自适应图标背景色（与assets/icon.png主色调匹配）
+adaptive_icon_background = "#06B6D4"
 # Android 权限声明：语音通话需要录音，网络通信需要 INTERNET
 permissions = [
     "android.permission.INTERNET",
@@ -24,5 +32,7 @@ permissions = [
     "android.permission.BLUETOOTH",
     "android.permission.BLUETOOTH_CONNECT",
     "android.permission.FOREGROUND_SERVICE",
+    "android.permission.FOREGROUND_SERVICE_SPECIAL_USE",
+    "android.permission.POST_NOTIFICATIONS",
     "android.permission.WAKE_LOCK",
 ]

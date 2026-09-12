@@ -97,7 +97,7 @@ from client.ui.voice_udp import (
     build_room_start, build_room_join, build_room_leave, build_room_end,
 )
 
-VERSION = "v2.8.5"
+VERSION = "v3.0.0"
 
 
 class MobileChatApp:
@@ -237,41 +237,51 @@ class MobileChatApp:
         threading.Timer(0.28, _do_close).start()
 
     def _android_play(self, audio):
-        """Android 异步播放 ft.Audio。
+        """Android 异步播放 ft.Audio。支持单个Audio或Audio列表（多文件名候选，逐个尝试）。
         Flet 0.86 的 play()/seek() 是协程，必须丢进事件循环 await 才真正发声；
         每次播放前 seek(0) 回到开头，规避 Android“只响一次、之后 play 无效”的已知问题。"""
         if audio is None or self._loop is None:
             return
+        audios = audio if isinstance(audio, (list, tuple)) else [audio]
         async def _do():
-            # play(position=0) 直接从头播放，规避 Android“只响一次”问题，也免去 seek 的 Duration 参数
-            for attempt in ("zero", "plain"):
-                try:
-                    if attempt == "zero":
-                        r = audio.play(0)
-                    else:
-                        r = audio.play()
-                    if asyncio.iscoroutine(r):
-                        await r
-                    return
-                except Exception as e:
-                    last = e
-            self._log(f"android audio play failed: {last}")
+            last = None
+            for a in audios:
+                if a is None:
+                    continue
+                # play(position=0) 直接从头播放，规避 Android“只响一次”问题，也免去 seek 的 Duration 参数
+                for attempt in ("zero", "plain"):
+                    try:
+                        if attempt == "zero":
+                            r = a.play(0)
+                        else:
+                            r = a.play()
+                        if asyncio.iscoroutine(r):
+                            await r
+                        return
+                    except Exception as e:
+                        last = e
+            if last:
+                self._log(f"android audio play failed: {last}")
         try:
             asyncio.run_coroutine_threadsafe(_do(), self._loop)
         except Exception as e:
             self._log(f"android audio schedule failed: {e}")
 
     def _android_pause(self, audio):
-        """Android 异步暂停 ft.Audio（pause 也是协程）。"""
+        """Android 异步暂停 ft.Audio（pause 也是协程）。支持单个或列表。"""
         if audio is None or self._loop is None:
             return
+        audios = audio if isinstance(audio, (list, tuple)) else [audio]
         async def _do():
-            try:
-                r = audio.pause()
-                if asyncio.iscoroutine(r):
-                    await r
-            except Exception:
-                pass
+            for a in audios:
+                if a is None:
+                    continue
+                try:
+                    r = a.pause()
+                    if asyncio.iscoroutine(r):
+                        await r
+                except Exception:
+                    pass
         try:
             asyncio.run_coroutine_threadsafe(_do(), self._loop)
         except Exception:
@@ -299,14 +309,14 @@ class MobileChatApp:
         """
         if not hasattr(self, "page") or self.page is None:
             return
-        audio_controls = [
-            getattr(self, "_audio_click", None),
-            getattr(self, "_audio_notify", None),
-            getattr(self, "_audio_dial", None),
-            getattr(self, "_audio_ring", None),
-            getattr(self, "_audio_hangup", None),
-        ]
-        audio_controls = [a for a in audio_controls if a is not None]
+        audio_controls = []
+        for attr in ("_audio_click", "_audio_notify", "_audio_dial",
+                     "_audio_ring", "_audio_hangup"):
+            val = getattr(self, attr, None)
+            if isinstance(val, (list, tuple)):
+                audio_controls.extend([a for a in val if a is not None])
+            elif val is not None:
+                audio_controls.append(val)
         if not audio_controls:
             return
 
@@ -371,15 +381,26 @@ class MobileChatApp:
         # 3. Android 端统一使用 MP3 格式（兼容性最好），文件放在 assets/ 目录。
         if _is_android():
             try:
-                self._audio_click = _make_audio("/click.mp3", volume=0.4)
-                self._audio_notify = _make_audio("/notify.mp3", volume=0.6)
-                self._audio_dial = _make_audio("/dial.mp3", volume=0.6)
-                self._audio_ring = _make_audio("/ring.mp3", volume=0.6, loop=True)
-                self._audio_hangup = _make_audio("/hangup.mp3", volume=0.6)
-                for _a in [self._audio_click, self._audio_notify, self._audio_dial,
-                           self._audio_ring, self._audio_hangup]:
+                # 每套音效创建两个候选文件名（短名 + 桌面WAV风格名），播放时逐个尝试，
+                # 兼容 assets 目录中实际使用的任意一套命名。
+                self._audio_click = [_make_audio("/click.mp3", volume=0.4),
+                                      _make_audio("/Windows Navigation Start.mp3", volume=0.4)]
+                self._audio_notify = [_make_audio("/notify.mp3", volume=0.6),
+                                       _make_audio("/notify.mp3", volume=0.6)]
+                self._audio_dial = [_make_audio("/dial.mp3", volume=0.6),
+                                     _make_audio("/Alarm08.mp3", volume=0.6)]
+                self._audio_ring = [_make_audio("/ring.mp3", volume=0.6, loop=True),
+                                     _make_audio("/Alarm03.mp3", volume=0.6, loop=True)]
+                self._audio_hangup = [_make_audio("/hangup.mp3", volume=0.6),
+                                       _make_audio("/Speech Misrecognition.mp3", volume=0.6)]
+                # 展平列表后全部挂载到 page.services
+                all_audios = []
+                for _alist in [self._audio_click, self._audio_notify, self._audio_dial,
+                                self._audio_ring, self._audio_hangup]:
+                    all_audios.extend([a for a in _alist if a is not None])
+                for _a in all_audios:
                     _mount_service(page, _a)
-                self._log(f"Android audio effects initialized (fta={fta is not None})")
+                self._log(f"Android audio effects initialized (fta={fta is not None}, {len(all_audios)} objects)")
             except Exception as e:
                 self._log(f"Android audio init failed: {e}")
         await self.show_splash()
@@ -528,93 +549,6 @@ class MobileChatApp:
 
     async def show_login(self):
         host, port = load_server_config()
-        host_field = ft.TextField(value=str(host), expand=True, dense=True, height=44, label=t("服务器地址(IPv4/域名)"))
-        port_field = ft.TextField(value=str(port), expand=True, dense=True, height=44)
-        ipv6_field = ft.TextField(expand=True, dense=True, height=44, label=t("服务器IPv6地址(可选)"),
-                                   hint_text=t("填了优先用IPv6，不填用上面的地址"))
-        user_field = ft.TextField(expand=True, dense=True, height=44, hint_text=t("请输入昵称"))
-        pwd_field = ft.TextField(expand=True, dense=True, height=44, password=True, hint_text=t("密码（可留空）"))
-        err_text = ft.Text("", size=15, color=ft.Colors.RED_500)
-        status_text = ft.Text("", size=15, color=ft.Colors.GREY_600)
-        login_btn = ft.ElevatedButton(t("登 录"), expand=True, height=50,
-                                      bgcolor=ft.Colors.BLUE_600, color=ft.Colors.WHITE)
-        reg_btn = ft.OutlinedButton(t("注 册"), expand=True, height=50)
-        self._login_err = err_text
-        self._login_status = status_text
-
-        def _set_busy(busy: bool):
-            # 请求进行中禁用按钮，避免重复点击发起多个连接
-            login_btn.disabled = busy
-            reg_btn.disabled = busy
-            try:
-                self.page.update()
-            except Exception:
-                pass
-
-        def _do_login(e):
-            self._btn_sound()
-            # —— 输入校验（TextField 未填时 value 为 None，必须兜底，否则 .strip()/int() 直接崩溃，按钮像“没反应”）——
-            username = (user_field.value or "").strip()
-            password = pwd_field.value or ""
-            ipv6_addr = (ipv6_field.value or "").strip()
-            host_val = (host_field.value or "").strip() or "127.0.0.1"
-            connect_host = ipv6_addr if ipv6_addr else host_val
-            try:
-                port = int(str(port_field.value or "9999").strip() or 9999)
-            except (TypeError, ValueError):
-                err_text.value = t("端口必须是数字")
-                self.page.update()
-                return
-            if not username:
-                err_text.value = t("请输入昵称")
-                self.page.update()
-                return
-            err_text.value = ""
-            status_text.value = t("正在连接服务器...")
-            _set_busy(True)
-            # 无论登录成功（会切页）还是失败，都恢复按钮；失败时在回调里恢复
-            self._login_buttons = (login_btn, reg_btn, _set_busy)
-            self.do_login(username, password, connect_host, port)
-
-        def _after_register(ok, msg):
-            _set_busy(False)
-            status_text.value = msg
-            uname = (user_field.value or "").strip()
-            pwd = pwd_field.value or ""
-            self.page.update()
-            if ok:
-                # 注册成功直接自动登录，省得再手动点一次登录
-                status_text.value = t("注册成功，正在自动登录...")
-                _set_busy(True)
-                ipv6_addr = (ipv6_field.value or "").strip()
-                host_val = (host_field.value or "").strip() or "127.0.0.1"
-                connect_host = ipv6_addr if ipv6_addr else host_val
-                try:
-                    port = int(str(port_field.value or "9999").strip() or 9999)
-                except (TypeError, ValueError):
-                    port = 9999
-                self.do_login(uname, pwd, connect_host, port)
-
-        def _do_register(e):
-            self._btn_sound()
-            username = (user_field.value or "").strip()
-            password = pwd_field.value or ""
-            if not username:
-                err_text.value = t("请输入昵称")
-                self.page.update()
-                return
-            if len(password) < 4:
-                err_text.value = t("密码至少 4 位（也可设置后牢记）")
-                self.page.update()
-                return
-            err_text.value = ""
-            status_text.value = t("正在注册...")
-            _set_busy(True)
-            self.do_register(username, password, _after_register)
-
-        login_btn.on_click = _do_login
-        reg_btn.on_click = _do_register
-
         # iOS 风格：蓝紫渐变背景
         _ios_gradient = ft.LinearGradient(
             begin=ft.alignment.top_center,
@@ -660,8 +594,15 @@ class MobileChatApp:
         self._login_status = status_text
 
         def _set_busy(busy: bool):
-            login_btn.disabled = busy
-            reg_btn.disabled = busy
+            # Container 没有 disabled 属性，通过保存/置空 on_click 真正阻止点击
+            if busy:
+                login_btn._saved_on_click = login_btn.on_click
+                reg_btn._saved_on_click = reg_btn.on_click
+                login_btn.on_click = None
+                reg_btn.on_click = None
+            else:
+                login_btn.on_click = getattr(login_btn, '_saved_on_click', None)
+                reg_btn.on_click = getattr(reg_btn, '_saved_on_click', None)
             login_btn.opacity = 0.5 if busy else 1.0
             reg_btn.opacity = 0.5 if busy else 1.0
             try:
@@ -832,14 +773,18 @@ class MobileChatApp:
             else:
                 # 重连场景：已在聊天页，_login_err 为 None，用系统消息显示
                 self._append_system(f"⚠️ {msg}")
-            # 登录失败：恢复登录/注册按钮可点击（成功时已切页，无需恢复）
-            btns = getattr(self, "_login_buttons", None)
-            if btns:
-                try:
-                    _, _, _set_busy = btns
-                    _set_busy(False)
-                except Exception:
-                    pass
+                # 自动重连场景：本次失败后继续调度下一次重试（形成完整重试链）
+                if getattr(self, "_auto_reconnect", False) and self.client.username:
+                    self._do_auto_reconnect()
+            # 登录失败：恢复登录/注册按钮可点击（仅在登录页时操作，重连场景按钮已销毁）
+            if self._login_err is not None:
+                btns = getattr(self, "_login_buttons", None)
+                if btns:
+                    try:
+                        _, _, _set_busy = btns
+                        _set_busy(False)
+                    except Exception:
+                        pass
         self._ui(_set)
 
     # ==================== 主界面（聊天） ====================
@@ -954,6 +899,9 @@ class MobileChatApp:
         self._append_system(t("已连接到聊天室"))
         # 重连后页面重建，重新挂载音频控件（修复点击音效失效）
         self._remount_audio_services()
+        # 重连后恢复语音房间注册（TCP断开时服务器清理了语音注册，需重新voice_join）
+        if self.voice_call and getattr(self.voice_call, "_running", False):
+            self._ui(self._voice_rejoin_room())
         self._log(f"show_chat done, version={VERSION}")
 
     # ==================== 消息渲染 ====================
@@ -1345,8 +1293,54 @@ class MobileChatApp:
         self._btn_sound()
         self._show_file_send_dialog()
 
+    def _resolve_android_content_uri(self, uri_str):
+        """Android content URI 复制到临时文件，返回文件系统路径；非 content URI 直接返回原路径。"""
+        if not uri_str or not uri_str.startswith("content://"):
+            return uri_str
+        try:
+            from jnius import autoclass
+            PythonActivity = autoclass("org.kivy.android.PythonActivity")
+            Uri = autoclass("android.net.Uri")
+            uri = Uri.parse(uri_str)
+            activity = PythonActivity.mActivity
+            resolver = activity.getContentResolver()
+            # 尝试获取原始文件名
+            display_name = "picked_file"
+            try:
+                cursor = resolver.query(uri, None, None, None, None)
+                if cursor and cursor.moveToFirst():
+                    name_idx = cursor.getColumnIndex("_display_name")
+                    if name_idx >= 0:
+                        val = cursor.getString(name_idx)
+                        if val:
+                            display_name = val
+                    cursor.close()
+            except Exception:
+                pass
+            # 复制到临时文件
+            import tempfile
+            ext = os.path.splitext(display_name)[1]
+            fd, tmp_path = tempfile.mkstemp(suffix=ext)
+            os.close(fd)
+            input_stream = resolver.openInputStream(uri)
+            try:
+                with open(tmp_path, "wb") as out:
+                    buf = bytearray(8192)
+                    while True:
+                        n = input_stream.read(buf)
+                        if n <= 0:
+                            break
+                        out.write(bytes(buf[:n]))
+            finally:
+                input_stream.close()
+            self._log(f"content URI resolved to: {tmp_path}")
+            return tmp_path
+        except Exception as e:
+            self._log(f"content URI resolve failed: {e}")
+            return uri_str
+
     def _pick_file_with_fallback(self, path_display, send_btn, dlg):
-        """选择文件：优先FilePicker，失败用tkinter兜底（桌面端）。"""
+        """选择文件：优先FilePicker，失败用tkinter兜底（桌面端，独立线程避免阻塞UI）。"""
         self._pending_file_dialog = dlg
         self._pending_path_display = path_display
         self._pending_send_btn = send_btn
@@ -1356,26 +1350,31 @@ class MobileChatApp:
                 return
             except Exception as ex:
                 self._log(f"FilePicker failed: {ex}, fallback to tkinter")
-        # tkinter 兜底
-        try:
-            import tkinter as tk
-            from tkinter import filedialog
-            root = tk.Tk()
-            root.withdraw()
-            root.attributes("-topmost", True)
-            file_path = filedialog.askopenfilename(title=t("选择要发送的文件"))
-            root.destroy()
-            if file_path:
-                self._on_file_picked_path(file_path)
-        except Exception as ex:
-            self._log(f"tkinter pick failed: {ex}")
-            if path_display:
-                path_display.value = t("文件选择失败，请重试")
-                self.page.update()
+        # tkinter 兜底：必须放独立线程，否则 askopenfilename 阻塞会冻结整个 Flet 窗口
+        def _tk_worker():
+            try:
+                import tkinter as tk
+                from tkinter import filedialog
+                root = tk.Tk()
+                root.withdraw()
+                root.attributes("-topmost", True)
+                file_path = filedialog.askopenfilename(title=t("选择要发送的文件"))
+                root.destroy()
+                if file_path:
+                    self._ui(self._on_file_picked_path, file_path)
+            except Exception as ex:
+                self._log(f"tkinter pick failed: {ex}")
+                def _err():
+                    if path_display:
+                        path_display.value = t("文件选择失败，请重试")
+                        self.page.update()
+                self._ui(_err)
+        threading.Thread(target=_tk_worker, daemon=True).start()
 
     def _on_file_picked_path(self, filepath):
-        """处理文件路径（FilePicker和tkinter共用）。"""
+        """处理文件路径（FilePicker和tkinter共用）。Android content URI 先解析为临时文件。"""
         try:
+            filepath = self._resolve_android_content_uri(filepath)
             if filepath and os.path.exists(filepath):
                 if self._pending_path_display is not None:
                     self._pending_path_display.value = filepath
@@ -1421,8 +1420,8 @@ class MobileChatApp:
 
         def _pick(ev):
             self._btn_sound()
-            self._animate_btn(send_file_btn) if send_file_btn.opacity > 0.5 else None
-            self._pick_file_with_fallback(path_display, send_file_btn, dlg)
+            self._animate_btn(pick_btn)
+            pick_photo_native(self, path_display, send_file_btn, dlg)
 
         # 选择文件按钮（iOS 风格渐变）
         pick_btn = ft.Container(
@@ -1492,8 +1491,10 @@ class MobileChatApp:
         self.conversations.setdefault(self.current_conv, []).append(fm)
         self._refresh_messages(self.current_conv)
 
-        def on_progress(percent, speed):
-            self._file_progress[fm.file_id or filename] = percent
+        def on_progress(file_id, percent):
+            if file_id and not fm.file_id:
+                fm.file_id = file_id
+            self._file_progress[file_id or filename] = percent
             self._refresh_messages(self.current_conv)
 
         def worker():
@@ -1529,7 +1530,7 @@ class MobileChatApp:
             save_dir = os.path.join(os.path.expanduser("~"), "LanTalkFiles")
             os.makedirs(save_dir, exist_ok=True)
 
-        def on_progress(percent, speed):
+        def on_progress(file_id, percent):
             self._file_progress[file_id] = percent
             self._refresh_messages(conv_id)
 
@@ -1571,6 +1572,13 @@ class MobileChatApp:
                         self.page.update()
                     except Exception:
                         pass
+                # 启动失败：自动停止并清理VoiceCall，释放UDP socket和音频设备
+                try:
+                    self.voice_call.stop()
+                except Exception:
+                    pass
+                self.voice_call = None
+                self._current_voice_room = ""
             return ok
         except Exception as e:
             self._log(f"voice_join_room failed: {e}")
@@ -1583,6 +1591,25 @@ class MobileChatApp:
                 "username": self.client.username, "room_id": room_id}))
         except Exception as e:
             self._log(f"voice_leave failed: {e}")
+
+    async def _voice_rejoin_room(self):
+        """重连后重新注册到语音房间（复用已有UDP socket和音频流，不重建、不重启）。"""
+        if not self.voice_call or not getattr(self.voice_call, "_running", False):
+            return
+        room_id = getattr(self, "_current_voice_room", "")
+        if not room_id:
+            return
+        try:
+            local_port = self.voice_call.local_udp_port
+            result = await self._run_in_thread(lambda: self.client._temp_request("voice_join", {
+                "username": self.client.username, "room_id": room_id, "udp_port": local_port}))
+            if result.get("ok"):
+                self.voice_call.server_port = result.get("relay_port", 5005)
+                self._append_system(t("语音通话已恢复"))
+            else:
+                self._append_system(t("语音重连失败，请重新发起通话"))
+        except Exception as e:
+            self._log(f"voice rejoin failed: {e}")
 
     def _start_voice(self, e):
         self._btn_sound()
@@ -1726,11 +1753,19 @@ class MobileChatApp:
         if not self.public_voice_room:
             return
         room_id = self.public_voice_room["room_id"]
+        is_host = self.public_voice_room.get("host") == (self.client.username or "")
         signal = build_room_leave(room_id, self.client.username or "")
         try:
             self.client.send_text(signal)
         except Exception as e:
             self._log(f"room leave signal failed: {e}")
+        # 房主离开时额外发送 room_end，通知房间内其他用户房间已结束
+        if is_host:
+            try:
+                end_signal = build_room_end(room_id, self.client.username or "")
+                self.client.send_text(end_signal)
+            except Exception as e:
+                self._log(f"room end signal failed: {e}")
         if self.voice_call:
             self.voice_call.stop()
             self.voice_call = None
@@ -1751,7 +1786,8 @@ class MobileChatApp:
             if self.voice_target and self.voice_call and not self.voice_call._running:
                 room_id = self._get_private_room_id(self.client.username or "", self.voice_target)
                 self._current_voice_room = room_id
-                self._ui(self._voice_join_room(room_id))
+                # 直接await而非self._ui()，避免异步调度延迟导致主叫方丢前几秒音频
+                await self._voice_join_room(room_id)
         elif sig_type == "reject" and caller == self.client.username:
             # 主叫收到被叫的拒绝（信令中 caller 为主叫自己）
             if self.voice_call:
@@ -1784,9 +1820,12 @@ class MobileChatApp:
         elif sig_type == "room_leave" and not is_self:
             self._append_system(t("{callee} 离开了语音房间").format(callee=callee))
         elif sig_type == "room_end" and not is_self:
+            room_id = caller
             if self.voice_call:
                 self.voice_call.stop()
                 self.voice_call = None
+            await self._voice_leave_room(room_id)
+            self._current_voice_room = ""
             self.public_voice_room = None
             self._hide_voice_overlay()
             self._append_system(t("语音房间已结束"))
@@ -2003,15 +2042,6 @@ class MobileChatApp:
         else:
             self._ui(self.end_voice_call())
 
-    def _back_to_chat(self, e):
-        self._btn_sound()
-        """返回聊天界面（不挂断）。"""
-        if self._chat_root is not None:
-            self.page.controls.clear()
-            self.page.controls.append(self._chat_root)
-            self.page.update()
-            self._append_system(t("（语音通话进行中，可在语音界面挂断）"))
-
     # ---------- 来电弹窗 ----------
     def _show_incoming_call(self, caller):
         self._play_sound("Alarm03.wav", loop=True)  # 来电循环音效
@@ -2188,6 +2218,7 @@ class MobileChatApp:
         """顶部栏快速重连（不弹窗，直接重连）。"""
         self._btn_sound()
         self._append_system(t("正在重新连接..."))
+        self._reconnect_attempts = 0
         self._stop_heartbeat()
         self._stop_net_ui_refresh()
         try: self.client.close()
@@ -2199,6 +2230,7 @@ class MobileChatApp:
         self._btn_sound()
         self.page.pop_dialog()
         self._append_system(t("正在重新连接..."))
+        self._reconnect_attempts = 0
         self._stop_heartbeat()
         self._stop_net_ui_refresh()
         try: self.client.close()
@@ -2233,30 +2265,29 @@ class MobileChatApp:
 
     # ==================== 心跳 / 网络状态栏 ====================
     def _start_heartbeat(self):
-        self._stop_heartbeat()  # 先停旧的，防止重连后心跳链重复
+        self._stop_heartbeat()  # 先停旧的，防止重连后心跳重复
         self._heartbeat_running = True
-        self._heartbeat_loop()
+        self._heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
+        self._heartbeat_thread.start()
 
     def _heartbeat_loop(self):
-        if not self._heartbeat_running:
-            return
-        def worker():
+        """单线程心跳循环：每10秒发一次ping，_stop_heartbeat置False后最多10秒退出。"""
+        while self._heartbeat_running:
             try:
                 if self.client.running and self.client.sock:
                     self._ping_sent += 1
                     try:
-                        from client.message import send_action
                         self._ping_send_time = time.time()
                         self.client.send_ping()
                     except Exception:
                         pass
             except Exception:
                 pass
-            if self._heartbeat_running:
-                self._heartbeat_timer = threading.Timer(10, self._heartbeat_loop)
-                self._heartbeat_timer.daemon = True
-                self._heartbeat_timer.start()
-        threading.Thread(target=worker, daemon=True).start()
+            # 分段sleep，使_stop_heartbeat能更快响应（最多1秒延迟）
+            for _ in range(10):
+                if not self._heartbeat_running:
+                    break
+                time.sleep(1)
 
     def _on_pong(self):
         """收到服务端pong，计算真实RTT。"""
@@ -2279,6 +2310,8 @@ class MobileChatApp:
         self._heartbeat_running = False
         if self._heartbeat_timer:
             self._heartbeat_timer.cancel(); self._heartbeat_timer = None
+        if getattr(self, "_heartbeat_thread", None):
+            self._heartbeat_thread = None
 
     def _start_net_ui_refresh(self):
         """网络状态栏 0.5 秒刷新一次显示（仅刷新显示，不重新发 ping；先停旧的防重复）。"""
@@ -2455,3 +2488,60 @@ if __name__ == "__main__":
         ft.run(main)
     except AttributeError:
         ft.app(target=main)
+
+
+# ==================== 新增：Android原生Photo Picker接入（增量开发，不修改原有代码）====================
+def pick_photo_native(app, path_display, send_btn, dlg):
+    """
+    使用Android原生Photo Picker选择图片，不可用时自动降级到原有Flet FilePicker/tkinter。
+
+    这是新增的独立函数，不修改原有 _pick_file_with_fallback 的任何一行代码。
+    集成方式：在 _show_file_send_dialog 的 _pick 函数中，将
+        self._pick_file_with_fallback(path_display, send_file_btn, dlg)
+    替换为
+        pick_photo_native(self, path_display, send_file_btn, dlg)
+
+    参数:
+        app: MobileChatApp 实例（即 self）
+        path_display: 路径显示控件
+        send_btn: 发送按钮
+        dlg: 文件发送弹窗
+    """
+    try:
+        from android_photo_picker import AndroidPhotoPicker
+    except ImportError:
+        # 模块不存在，直接降级到原有逻辑
+        app._pick_file_with_fallback(path_display, send_btn, dlg)
+        return
+
+    if not hasattr(app, '_photo_picker') or app._photo_picker is None:
+        app._photo_picker = AndroidPhotoPicker(page=app.page)
+
+    def on_photos(paths):
+        if paths:
+            # 选中图片，复用原有文件路径处理逻辑（自动走加密+发送流程）
+            app._on_file_picked_path(paths[0])
+        # 用户取消或选择失败：不做处理，保持弹窗打开
+
+    ok = app._photo_picker.pick(on_photos, multi=False)
+    if not ok:
+        # 原生Photo Picker不可用（桌面端/非Android/设备不支持），降级到原有Flet FilePicker
+        app._pick_file_with_fallback(path_display, send_btn, dlg)
+
+
+# ======================================================================
+# 崩溃日志模块初始化（追加代码，不修改原有代码）
+# 全局捕获未处理异常，崩溃时自动生成本地日志文件
+# ======================================================================
+try:
+    from crash_logger import CrashLogger
+    _crash_logger = CrashLogger(
+        log_dir="crash_logs",
+        app_version=VERSION,
+        app_name="LanTalk",
+        include_locals=True,
+        max_log_files=50,
+    )
+    _crash_logger.install()
+except Exception as _crash_init_error:
+    print(f"[CrashLogger] 初始化失败: {_crash_init_error}")
