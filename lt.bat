@@ -126,6 +126,8 @@ echo.
 echo       - name: Build patched APK
 echo         run: ^|
 echo           cd build/flutter
+echo           export SERIOUS_PYTHON_SITE_PACKAGES="$GITHUB_WORKSPACE/build/site-packages"
+echo           export SERIOUS_PYTHON_APP="$GITHUB_WORKSPACE/build/python-app"
 echo           flutter build apk --release
 echo.
 echo       - name: Upload APK

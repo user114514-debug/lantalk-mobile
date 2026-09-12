@@ -50,6 +50,12 @@ jobs:
       - name: Build patched APK
         run: |
           cd build/flutter
+          # flet build apk 在内部 flutter build 时会注入这两个环境变量，
+          # 但我们在 flet build 之后手动运行 flutter build，需要手动设置，
+          # 否则 serious_python_android 的 build.gradle.kts 会报错：
+          # SERIOUS_PYTHON_SITE_PACKAGES environment variable is not set
+          export SERIOUS_PYTHON_SITE_PACKAGES="$GITHUB_WORKSPACE/build/site-packages"
+          export SERIOUS_PYTHON_APP="$GITHUB_WORKSPACE/build/python-app"
           flutter build apk --release
 
       - name: Upload APK
