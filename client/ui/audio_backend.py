@@ -189,13 +189,36 @@ def _create_desktop(sample_rate, channels, frame_size_bytes, input_device_index=
         return _create_pyaudio(sample_rate, channels, frame_size_bytes, input_device_index)
 
 
+# ---- 健壮的 Java byte[] 创建（serious_python 的 pyjnius 不能 from jnius import jarray）----
+def _new_jbyte_array(n):
+    try:
+        import jnius as _j
+        if hasattr(_j, "jarray") and hasattr(_j.jarray, "zeros"):
+            return _j.jarray.zeros(n, "b")
+    except Exception:
+        pass
+    try:
+        from jnius import jarray as _ja
+        return _ja.zeros(n, "b")
+    except Exception:
+        pass
+    try:
+        import jnius.jarray as _jam
+        return _jam.zeros(n, "b")
+    except Exception:
+        pass
+    from jnius import autoclass
+    _Array = autoclass("java.lang.reflect.Array")
+    _Byte = autoclass("java.lang.Byte")
+    return _Array.newInstance(_Byte.TYPE, n)
+
+
 # ============================ Android：pyjnius 原生 ============================
 class _AndroidInput:
     def __init__(self, recorder, frame_bytes):
         self._recorder = recorder
         self._frame_bytes = frame_bytes
-        from jnius import jarray
-        self._buf = jarray.zeros(frame_bytes, "b")
+        self._buf = _new_jbyte_array(frame_bytes)
         self._recorder.startRecording()
 
     def read(self, num_bytes):
@@ -219,8 +242,6 @@ class _AndroidInput:
 class _AndroidOutput:
     def __init__(self, track):
         self._track = track
-        from jnius import jarray
-        self._jarray = jarray
         self._track.play()
         self._lock = threading.Lock()
 
@@ -228,7 +249,7 @@ class _AndroidOutput:
         if not data:
             return
         with self._lock:
-            buf = self._jarray.zeros(len(data), "b")
+            buf = _new_jbyte_array(len(data))
             ba = bytearray(data)
             for i, v in enumerate(ba):
                 buf[i] = v if v < 128 else v - 256

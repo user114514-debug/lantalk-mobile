@@ -363,16 +363,19 @@ class MobileChatApp:
         self._file_picker_ok = False
         if _is_android():
             try:
+                _trace_event("FilePicker init start")
                 # Flet 0.86：FilePicker 是非视觉控件，必须挂 page.services
-                # （挂 overlay 不会注册原生通道，pick_files 无反应/不弹选择器）
                 self._file_picker = ft.FilePicker(on_result=self._on_file_picked)
                 _mount_service(page, self._file_picker)
+                _trace_event(f"FilePicker mounted, has services={hasattr(page, 'services')}")
                 try:
                     page.update()
                 except Exception:
                     pass
                 self._file_picker_ok = True
+                _trace_event("FilePicker init OK")
             except Exception as e:
+                _trace_event(f"FilePicker init FAILED: {e!r}")
                 self._log(f"FilePicker init failed: {e}")
         # ===== 安卓端音效初始化（ft.Audio）=====
         # 注意：
@@ -1347,6 +1350,8 @@ class MobileChatApp:
         self._pending_file_dialog = dlg
         self._pending_path_display = path_display
         self._pending_send_btn = send_btn
+        if not (self._file_picker_ok and self._file_picker):
+            _trace_event(f"FilePicker unavailable ok={self._file_picker_ok} obj={self._file_picker is not None}")
         if self._file_picker_ok and self._file_picker:
             try:
                 _trace_event("FilePicker.pick_files invoking")

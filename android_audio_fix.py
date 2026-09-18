@@ -23,6 +23,62 @@ import threading
 import sys
 
 
+def _load_jarray():
+    """serious_python 打包的 pyjnius 不能 `from jnius import jarray`，
+    依次尝试子模块路径，全部失败返回 None。"""
+    try:
+        import jnius as _j
+        if hasattr(_j, "jarray") and hasattr(_j.jarray, "zeros"):
+            return _j.jarray
+    except Exception:
+        pass
+    try:
+        from jnius import jarray as _ja
+        if hasattr(_ja, "zeros"):
+            return _ja
+    except Exception:
+        pass
+    try:
+        import jnius.jarray as _jam
+        if hasattr(_jam, "zeros"):
+            return _jam
+    except Exception:
+        pass
+    return None
+
+
+_JARRAY = None
+
+
+def _new_byte_array(n):
+    """创建 Java byte[n]；jarray 不可用时用 java.lang.reflect.Array 兜底。"""
+    global _JARRAY
+    if _JARRAY is not None:
+        return _JARRAY.zeros(n, "b")
+    _JARRAY = _load_jarray()
+    if _JARRAY is not None:
+        return _JARRAY.zeros(n, "b")
+    from jnius import autoclass
+    _Array = autoclass("java.lang.reflect.Array")
+    _Byte = autoclass("java.lang.Byte")
+    return _Array.newInstance(_Byte.TYPE, n)
+
+
+def _fill_byte_array(buf, data):
+    """把 Python bytes 填进 Java byte[]。jarray 支持索引赋值；反射数组兜底 setByte。"""
+    ba = bytearray(data)
+    try:
+        for i, v in enumerate(ba):
+            buf[i] = v if v < 128 else v - 256
+        return
+    except Exception:
+        pass
+    from jnius import autoclass
+    _Array = autoclass("java.lang.reflect.Array")
+    for i, v in enumerate(ba):
+        _Array.setByte(buf, i, v if v < 128 else v - 256)
+
+
 def is_android():
     # 多重检测：模块加载早期 sys.modules 里可能还没有 android
     import os
@@ -69,9 +125,11 @@ def patch_android_audio():
         return False
 
     try:
-        from jnius import autoclass, jarray
+        from jnius import autoclass
         from android_perms import get_activity, has_record_permission
-        _trace("import jnius+android_perms OK")
+        global _JARRAY
+        _JARRAY = _load_jarray()
+        _trace(f"import jnius+android_perms OK, jarray={'OK' if _JARRAY is not None else 'reflect-fallback'}")
 
         # ---- 安全版 Android Input ----
         class _SafeAndroidInput:
@@ -80,7 +138,7 @@ def patch_android_audio():
                 self._frame_bytes = frame_bytes
                 self._log_fn = log_fn
                 self._started = False
-                self._buf = jarray.zeros(frame_bytes, "b")
+                self._buf = _new_byte_array(frame_bytes)
                 try:
                     self._recorder.startRecording()
                     self._started = True
@@ -144,10 +202,8 @@ def patch_android_audio():
                     return
                 with self._lock:
                     try:
-                        buf = jarray.zeros(len(data), "b")
-                        ba = bytearray(data)
-                        for i, v in enumerate(ba):
-                            buf[i] = v if v < 128 else v - 256
+                        buf = _new_byte_array(len(data))
+                        _fill_byte_array(buf, data)
                         self._track.write(buf, 0, len(data))
                     except Exception:
                         pass
