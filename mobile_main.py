@@ -363,13 +363,10 @@ class MobileChatApp:
         self._file_picker_ok = False
         if _is_android():
             try:
-                # visible=False：避免安卓端FilePicker默认显示遮挡左侧界面
-                self._file_picker = ft.FilePicker(visible=False)
-                try:
-                    self._file_picker.on_result = self._on_file_picked
-                except Exception:
-                    pass
-                page.overlay.append(self._file_picker)
+                # Flet 0.86：FilePicker 是非视觉控件，必须挂 page.services
+                # （挂 overlay 不会注册原生通道，pick_files 无反应/不弹选择器）
+                self._file_picker = ft.FilePicker(on_result=self._on_file_picked)
+                _mount_service(page, self._file_picker)
                 try:
                     page.update()
                 except Exception:
@@ -816,8 +813,8 @@ class MobileChatApp:
             return _wrap
 
         # 顶部状态栏（毛玻璃）
-        self._net_text = ft.Text(t("延迟 --ms  丢包 --%"), size=13, color=ft.Colors.with_opacity(0.6, ft.Colors.GREY_800))
-        self._nick_text = ft.Text(self.client.username or "", size=15, weight=ft.FontWeight.W_600)
+        self._net_text = ft.Text(t("延迟 --ms  丢包 --%"), size=13, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS, color=ft.Colors.with_opacity(0.6, ft.Colors.GREY_800))
+        self._nick_text = ft.Text(self.client.username or "", size=15, weight=ft.FontWeight.W_600, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS, text_align=ft.TextAlign.RIGHT)
         settings_btn = ft.Container(
             content=ft.Icon(ft.icons.SETTINGS, size=20, color="#0A84FF"),
             width=36, height=36, border_radius=18, alignment=ft.alignment.center,
@@ -825,7 +822,9 @@ class MobileChatApp:
         )
         settings_btn.on_click = _tap_scale(settings_btn, self._open_settings)
         top_card = ft.Container(
-            content=ft.Row(controls=[self._net_text, ft.Container(expand=True), self._nick_text, settings_btn],
+            content=ft.Row(controls=[ft.Container(content=self._net_text, expand=1),
+                                      ft.Container(content=self._nick_text, expand=1, alignment=ft.alignment.center_right, margin=ft.margin.symmetric(horizontal=6)),
+                                      settings_btn],
                             vertical_alignment=ft.CrossAxisAlignment.CENTER),
             padding=ft.padding.symmetric(horizontal=14, vertical=10),
             border_radius=16, bgcolor=_ios_glass,
@@ -1350,9 +1349,19 @@ class MobileChatApp:
         self._pending_send_btn = send_btn
         if self._file_picker_ok and self._file_picker:
             try:
+                _trace_event("FilePicker.pick_files invoking")
+                # 惰性确保挂在 services（0.86 原生通道）
+                try:
+                    if hasattr(self.page, "services") and self._file_picker not in list(self.page.services):
+                        self.page.services.append(self._file_picker)
+                        self.page.update()
+                except Exception:
+                    pass
                 self._file_picker.pick_files(dialog_title=t("选择要发送的文件"), allow_multiple=False)
+                _trace_event("FilePicker.pick_files returned (picker launched)")
                 return
             except Exception as ex:
+                _trace_event(f"FilePicker.pick_files EXC: {ex!r}")
                 self._log(f"FilePicker failed: {ex}, fallback to tkinter")
         # tkinter 兜底：必须放独立线程，否则 askopenfilename 阻塞会冻结整个 Flet 窗口
         def _tk_worker():
@@ -1396,9 +1405,12 @@ class MobileChatApp:
 
     def _on_file_picked(self, e):
         try:
+            _trace_event(f"FilePicker on_result files={0 if not e.files else len(e.files)}")
             if e.files and len(e.files) > 0:
+                _trace_event(f"picked path={e.files[0].path}")
                 self._on_file_picked_path(e.files[0].path)
         except Exception as ex:
+            _trace_event(f"on_file_picked EXC: {ex!r}")
             self._log(f"on_file_picked error: {ex}")
 
     def _show_file_send_dialog(self):
