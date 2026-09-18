@@ -22,17 +22,24 @@ icon_background = "#06B6D4"
 [tool.flet.android]
 # Android自适应图标背景色（与assets/icon.png主色调匹配）
 adaptive_icon_background = "#06B6D4"
-# Android 权限声明：语音通话需要录音，网络通信需要 INTERNET
-permissions = [
-    "android.permission.INTERNET",
-    "android.permission.ACCESS_NETWORK_STATE",
-    "android.permission.ACCESS_WIFI_STATE",
-    "android.permission.RECORD_AUDIO",
-    "android.permission.MODIFY_AUDIO_SETTINGS",
-    "android.permission.BLUETOOTH",
-    "android.permission.BLUETOOTH_CONNECT",
-    "android.permission.FOREGROUND_SERVICE",
-    "android.permission.FOREGROUND_SERVICE_SPECIAL_USE",
-    "android.permission.POST_NOTIFICATIONS",
-    "android.permission.WAKE_LOCK",
-]
+
+# Android 权限声明：Flet 0.86 起必须用 [tool.flet.android.permission] 子表
+# （键="权限名"，值=true）；旧的 permissions=[...] 数组写法不会被注入 Manifest，
+# 会导致麦克风/照片权限缺失，表现为语音闪退、文件选择器不弹窗。
+[tool.flet.android.permission]
+"android.permission.INTERNET" = true
+"android.permission.ACCESS_NETWORK_STATE" = true
+"android.permission.ACCESS_WIFI_STATE" = true
+"android.permission.RECORD_AUDIO" = true
+"android.permission.MODIFY_AUDIO_SETTINGS" = true
+"android.permission.BLUETOOTH" = true
+"android.permission.BLUETOOTH_CONNECT" = true
+"android.permission.FOREGROUND_SERVICE" = true
+"android.permission.FOREGROUND_SERVICE_SPECIAL_USE" = true
+"android.permission.POST_NOTIFICATIONS" = true
+"android.permission.WAKE_LOCK" = true
+# 照片/视频/音频/文件（FilePicker 与媒体访问，API 33+ 用 READ_MEDIA_*）
+"android.permission.READ_MEDIA_IMAGES" = true
+"android.permission.READ_MEDIA_VIDEO" = true
+"android.permission.READ_MEDIA_AUDIO" = true
+"android.permission.READ_EXTERNAL_STORAGE" = true
