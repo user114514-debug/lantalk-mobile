@@ -2776,33 +2776,47 @@ try:
 
     _orig_open_settings_for_export = MobileChatApp._open_settings
 
+    def _find_column(node, depth=0):
+        """递归找第一个有 controls 的容器。"""
+        if depth > 6 or node is None:
+            return None
+        try:
+            if hasattr(node, "controls") and isinstance(node.controls, list):
+                return node
+        except Exception:
+            pass
+        for attr in ("content", "controls", "rows", "columns"):
+            child = getattr(node, attr, None)
+            if child is None:
+                continue
+            if isinstance(child, list):
+                for item in child:
+                    hit = _find_column(item, depth + 1)
+                    if hit is not None:
+                        return hit
+            else:
+                hit = _find_column(child, depth + 1)
+                if hit is not None:
+                    return hit
+        return None
+
     def _open_settings_with_export(self, e):
         _r = _orig_open_settings_for_export(self, e)
         try:
             btn = _build_crash_btn(self)
-            # 找到设置对话框的内层 Column，在退出登录按钮前插入导出按钮
-            dlg = self._active_dialog
-            if dlg is not None and dlg.content is not None:
-                card = dlg.content.content
-                if card is not None and card.content is not None:
-                    col = card.content
-                    if hasattr(col, "controls"):
-                        # 在 logout_btn（退出登录）之前插入
-                        inserted = False
-                        for i, c in enumerate(col.controls):
-                            # 找"退出登录"按钮（ElevatedButton，文本含"退出"）
-                            try:
-                                label = c.text if hasattr(c, "text") else ""
-                            except Exception:
-                                label = ""
-                            if "退出" in str(label) or "logout" in str(label).lower():
-                                col.controls.insert(i, btn)
-                                inserted = True
-                                break
-                        if not inserted:
-                            col.controls.append(btn)
+            dlg = getattr(self, "_active_dialog", None)
+            if dlg is None:
+                return _r
+            col = _find_column(dlg)
+            if col is not None:
+                col.controls.append(btn)
+                try:
+                    if hasattr(dlg, "update"):
+                        dlg.update()
+                except Exception:
+                    pass
         except Exception as _exp_err:
-            print(f"[CrashExport] inject button failed(ignored): {_exp_err}")
+            print(f"[CrashExport] inject failed: {_exp_err}")
         return _r
 
     MobileChatApp._open_settings = _open_settings_with_export
