@@ -26,6 +26,21 @@ import time
 import threading
 from datetime import datetime
 
+# ===== blackbox trace: must be defined early (mobile ft.run runs setup before module finishes) =====
+def _trace_event(msg):
+    try:
+        import os, time
+        d = "crash_logs"
+        try:
+            os.makedirs(d, exist_ok=True)
+        except Exception:
+            pass
+        with open(os.path.join(d, "debug_trace.txt"), "a", encoding="utf-8") as f:
+            f.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
+    except Exception:
+        pass
+
+
 # ---------- Flet 版本兼容层（复用现有 compat.py，自动打补丁） ----------
 from client.ui.compat import apply_compat
 from client.lang import t, set_lang
