@@ -2905,3 +2905,58 @@ try:
     MobileChatApp.show_chat = _show_chat_with_fab
 except Exception as _fab_hook_err:
     print(f"[CrashFAB] hook failed(ignored): {_fab_hook_err}")
+
+
+# ======================================================================
+# 关键步骤埋点（新增，不修改原有代码）：在语音/文件等易崩溃操作前
+# 写一行到 crash_logs/debug_trace.txt。native 崩溃后重启 APP，导出日志
+# 就能看到最后停在哪一步，定位 native 闪退点。
+# ======================================================================
+def _trace_event(msg):
+    try:
+        import os, time
+        d = "crash_logs"
+        try:
+            os.makedirs(d, exist_ok=True)
+        except Exception:
+            pass
+        with open(os.path.join(d, "debug_trace.txt"), "a", encoding="utf-8") as f:
+            f.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
+    except Exception:
+        pass
+
+
+# 包装语音启动
+try:
+    _orig_start_trace = MobileChatApp._start_voice
+    def _start_voice_traced(self, e):
+        _trace_event("=== TAP: start voice button ===")
+        try:
+            r = _orig_start_trace(self, e)
+            _trace_event("start voice returned OK")
+            return r
+        except Exception as ex:
+            _trace_event(f"start voice Python exception: {ex!r}")
+            raise
+    MobileChatApp._start_voice = _start_voice_traced
+except Exception:
+    pass
+
+# 包装文件选择
+try:
+    _orig_pick_trace = MobileChatApp._pick_file
+    def _pick_file_traced(self, e):
+        _trace_event("=== TAP: pick file button ===")
+        try:
+            r = _orig_pick_trace(self, e)
+            _trace_event("pick file returned OK")
+            return r
+        except Exception as ex:
+            _trace_event(f"pick file Python exception: {ex!r}")
+            raise
+    MobileChatApp._pick_file = _pick_file_traced
+except Exception:
+    pass
+
+# APP 启动时写一行标记
+_trace_event("=== APP process started ===")
