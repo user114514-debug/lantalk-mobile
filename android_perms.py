@@ -40,8 +40,20 @@ _ACTIVITY_HOST_CANDIDATES = [
 
 
 def is_android():
-    import sys
-    return "android" in sys.modules or hasattr(sys, "getandroidapilevel")
+    import sys, os
+    if "android" in sys.modules or hasattr(sys, "getandroidapilevel"):
+        return True
+    if os.environ.get("ANDROID_ROOT") == "/system":
+        return True
+    if os.environ.get("ANDROID_ARGUMENT"):
+        return True
+    if os.path.exists("/system/bin/app_process"):
+        return True
+    try:
+        import jnius  # noqa
+        return True
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------------- #

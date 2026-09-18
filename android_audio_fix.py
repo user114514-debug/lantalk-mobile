@@ -24,7 +24,21 @@ import sys
 
 
 def is_android():
-    return "android" in sys.modules or hasattr(sys, "getandroidapilevel")
+    # 多重检测：模块加载早期 sys.modules 里可能还没有 android
+    import os
+    if "android" in sys.modules or hasattr(sys, "getandroidapilevel"):
+        return True
+    if os.environ.get("ANDROID_ROOT") == "/system":
+        return True
+    if os.environ.get("ANDROID_ARGUMENT"):
+        return True
+    if os.path.exists("/system/bin/app_process"):
+        return True
+    try:
+        import jnius  # noqa
+        return True
+    except Exception:
+        return False
 
 
 def patch_android_audio():
@@ -32,17 +46,32 @@ def patch_android_audio():
     Monkey-patch audio_backend 模块。幂等，桌面端直接返回 False。
     在 mobile_main.py 末尾调用。
     """
+    def _trace(m):
+        try:
+            import os as _os
+            _os.makedirs("crash_logs", exist_ok=True)
+            with open(_os.path.join("crash_logs","debug_trace.txt"),"a",encoding="utf-8") as _f:
+                import time as _t
+                _f.write(f"[{_t.strftime('%H:%M:%S')}] [AudioPatch] {m}\n")
+        except Exception:
+            pass
+
     if not is_android():
+        _trace("is_android()=False, skip patch")
         return False
+    _trace("is_android()=True")
 
     try:
         from client.ui import audio_backend as ab
-    except Exception:
+        _trace("import audio_backend OK")
+    except Exception as _e:
+        _trace(f"import audio_backend FAILED: {_e!r}")
         return False
 
     try:
         from jnius import autoclass, jarray
         from android_perms import get_activity, has_record_permission
+        _trace("import jnius+android_perms OK")
 
         # ---- 安全版 Android Input ----
         class _SafeAndroidInput:
@@ -201,8 +230,10 @@ def patch_android_audio():
         # 替换
         ab._create_android = _safe_create_android
         print("[AudioFix] Android audio backend patched OK")
+        _trace("patch applied OK")
         return True
 
     except Exception as e:
         print(f"[AudioFix] patch failed: {e}")
+        _trace(f"patch FAILED: {e!r}")
         return False
