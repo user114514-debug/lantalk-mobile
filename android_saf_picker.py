@@ -95,7 +95,18 @@ def resolve_content_uri(uri_str, log_fn=None):
             except Exception:
                 pass
 
+    def _saf_trace(msg):
+        try:
+            import os, time
+            d = "crash_logs"
+            try: os.makedirs(d, exist_ok=True)
+            except Exception: pass
+            with open(os.path.join(d, "debug_trace.txt"), "a", encoding="utf-8") as _f:
+                _f.write(f"[{time.strftime('%H:%M:%S')}] [SAF] {msg}\n")
+        except Exception: pass
+    _saf_trace(f"resolve_content_uri called: {uri_str!r}")
     if not uri_str or not uri_str.startswith("content://"):
+        _saf_trace(f"not content://, return as-is")
         return uri_str
 
     try:
@@ -146,11 +157,13 @@ def resolve_content_uri(uri_str, log_fn=None):
                 pass
 
         _log(f"SAF resolve OK: {uri_str} -> {tmp_path}")
+        _saf_trace(f"OK -> {tmp_path} ({os.path.getsize(tmp_path)} bytes)")
         return tmp_path
 
     except Exception as e:
         _clear_java_exception()
         _log(f"SAF resolve failed: {e}")
+        _saf_trace(f"FAILED: {e!r}")
         return uri_str
 
 

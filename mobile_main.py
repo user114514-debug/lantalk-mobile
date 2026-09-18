@@ -2498,10 +2498,21 @@ def pick_photo_native(app, path_display, send_btn, dlg):
         send_btn: 发送按钮
         dlg: 文件发送弹窗
     """
+    def _ft(msg):
+        try:
+            import os, time
+            d = "crash_logs"
+            try: os.makedirs(d, exist_ok=True)
+            except Exception: pass
+            with open(os.path.join(d, "debug_trace.txt"), "a", encoding="utf-8") as _f:
+                _f.write(f"[{time.strftime('%H:%M:%S')}] [PICK] {msg}\n")
+        except Exception: pass
+    _ft("pick_photo_native called")
     try:
         from android_photo_picker import AndroidPhotoPicker
-    except ImportError:
-        # 模块不存在，直接降级到原有逻辑
+        _ft("android_photo_picker import OK")
+    except ImportError as ie:
+        _ft(f"android_photo_picker import FAIL: {ie!r}, fallback to flet")
         app._pick_file_with_fallback(path_display, send_btn, dlg)
         return
 
@@ -2509,14 +2520,25 @@ def pick_photo_native(app, path_display, send_btn, dlg):
         app._photo_picker = AndroidPhotoPicker(page=app.page)
 
     def on_photos(paths):
+        _ft(f"on_photos callback: paths={paths!r}")
         if paths:
-            # 选中图片，复用原有文件路径处理逻辑（自动走加密+发送流程）
-            app._on_file_picked_path(paths[0])
-        # 用户取消或选择失败：不做处理，保持弹窗打开
+            try:
+                app._on_file_picked_path(paths[0])
+                _ft(f"_on_file_picked_path OK for {paths[0]!r}")
+            except Exception as ex:
+                _ft(f"_on_file_picked_path FAIL: {ex!r}")
+                raise
+        else:
+            _ft("on_photos: paths empty (user cancelled?)")
 
-    ok = app._photo_picker.pick(on_photos, multi=False)
+    try:
+        ok = app._photo_picker.pick(on_photos, multi=False)
+        _ft(f"picker.pick returned {ok}")
+    except Exception as ex:
+        _ft(f"picker.pick EXCEPTION: {ex!r}")
+        ok = False
     if not ok:
-        # 原生Photo Picker不可用（桌面端/非Android/设备不支持），降级到原有Flet FilePicker
+        _ft("fallback to flet FilePicker")
         app._pick_file_with_fallback(path_display, send_btn, dlg)
 
 
