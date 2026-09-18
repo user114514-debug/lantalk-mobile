@@ -1,6 +1,6 @@
 [project]
 name = "lantalk"
-version = "3.0.0"
+version = "3.7.2"
 description = "LanTalk mobile client"
 # Flet 0.86 起，音频控件 ft.Audio 对应的 Flutter 插件 flet_audio
 # 必须在 dependencies 中声明，构建 APK 时才会被打包（旧的 --include-packages 参数已移除）

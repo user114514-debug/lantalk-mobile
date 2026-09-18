@@ -1,4 +1,4 @@
-﻿# mobile_main.py - LanTalk 移动端（安卓）入口  v1.0.0 Release
+# mobile_main.py - LanTalk 移动端（安卓）入口  v1.0.0 Release
 #
 # ============================================================
 #  重要约束声明：本文件为【新增】文件，原有项目【零改动】。
@@ -97,7 +97,7 @@ from client.ui.voice_udp import (
     build_room_start, build_room_join, build_room_leave, build_room_end,
 )
 
-VERSION = "v3.0.0"
+VERSION = "v3.7.2"
 
 
 class MobileChatApp:
@@ -2735,6 +2735,122 @@ try:
     MobileChatApp.show_chat = _show_chat_crash_dialog
 except Exception as _crash_dialog_hook_err:
     print(f"[CrashDialog] hook failed(ignored): {_crash_dialog_hook_err}")
+# ======================================================================
+# SAF 文件选择修复（新增，不修改原有代码）：
+# 原 _resolve_android_content_uri 和 android_photo_picker 里写死了
+# org.kivy.android.PythonActivity，在 serious_python 下不存在，
+# 导致 content:// URI 解析失败、文件选择"选了发不出去"。
+# ======================================================================
+try:
+    import android_saf_picker as _saf
+
+    def _patched_resolve_uri(self, uri_str):
+        return _saf.resolve_content_uri(uri_str, log_fn=getattr(self, "_log", None))
+
+    MobileChatApp._resolve_android_content_uri = _patched_resolve_uri
+    _saf.patch_photo_picker_activity()
+    print("[SAF] content URI resolver patched OK")
+except Exception as _saf_hook_err:
+    print(f"[SAF] patch failed(ignored): {_saf_hook_err}")
+
+
+# ======================================================================
+# 语音闪退修复（新增，不修改原有代码）：
+# 替换 audio_backend._create_android()，用 MIC 代替 VOICE_COMMUNICATION，
+# 正确检查权限，startRecording/play 包安全检查，加细粒度日志。
+# ======================================================================
+try:
+    from android_audio_fix import patch_android_audio
+    patch_android_audio()
+except Exception as _audio_fix_err:
+    print(f"[AudioFix] init failed(ignored): {_audio_fix_err}")
+
+
+# ======================================================================
+# 崩溃日志导出按钮（新增，不修改原有代码）：
+# 在设置对话框的列表里加【导出崩溃日志】按钮，把私有目录的 crash_logs/
+# 复制到公共 Downloads/LanTalk_crash_logs_时间戳/，荣耀 MagicOS 也能看到。
+# ======================================================================
+try:
+    from crash_export import build_export_button as _build_crash_btn
+
+    _orig_open_settings_for_export = MobileChatApp._open_settings
+
+    def _open_settings_with_export(self, e):
+        _r = _orig_open_settings_for_export(self, e)
+        try:
+            btn = _build_crash_btn(self)
+            # 找到设置对话框的内层 Column，在退出登录按钮前插入导出按钮
+            dlg = self._active_dialog
+            if dlg is not None and dlg.content is not None:
+                card = dlg.content.content
+                if card is not None and card.content is not None:
+                    col = card.content
+                    if hasattr(col, "controls"):
+                        # 在 logout_btn（退出登录）之前插入
+                        inserted = False
+                        for i, c in enumerate(col.controls):
+                            # 找"退出登录"按钮（ElevatedButton，文本含"退出"）
+                            try:
+                                label = c.text if hasattr(c, "text") else ""
+                            except Exception:
+                                label = ""
+                            if "退出" in str(label) or "logout" in str(label).lower():
+                                col.controls.insert(i, btn)
+                                inserted = True
+                                break
+                        if not inserted:
+                            col.controls.append(btn)
+        except Exception as _exp_err:
+            print(f"[CrashExport] inject button failed(ignored): {_exp_err}")
+        return _r
+
+    MobileChatApp._open_settings = _open_settings_with_export
+except Exception as _crash_export_hook_err:
+    print(f"[CrashExport] hook failed(ignored): {_crash_export_hook_err}")
+
+
+
+
+# ========== UI 动画 + 语音通话模式 patch（增量，不改原有代码）==========
+try:
+    from ui_animations import patch_ui_animations
+    patch_ui_animations()
+except Exception as _anim_err:
+    print(f"[UIAnim] load failed(ignored): {_anim_err}")
+
+# 语音通话模式设置（P2P优先 / 仅P2P / 仅中转）
+_VOICE_MODE_KEY = "voice_relay_mode"
+_DEFAULT_VOICE_MODE = "p2p_first"  # p2p_first / p2p_only / relay_only
+
+def _get_voice_mode():
+    try:
+        import json, os
+        cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "voice_mode.json")
+        if os.path.exists(cfg_path):
+            with open(cfg_path, "r") as f:
+                return json.load(f).get("mode", _DEFAULT_VOICE_MODE)
+    except Exception:
+        pass
+    return _DEFAULT_VOICE_MODE
+
+def _set_voice_mode(mode):
+    try:
+        import json, os
+        cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "voice_mode.json")
+        with open(cfg_path, "w") as f:
+            json.dump({"mode": mode}, f)
+        return True
+    except Exception:
+        return False
+
+# 导出给其他模块用
+VOICE_MODES = {
+    "p2p_first": "P2P优先(中转兜底)",
+    "p2p_only": "仅P2P直连",
+    "relay_only": "仅中转模式",
+}
+print(f"[VoiceMode] 当前语音模式: {VOICE_MODES.get(_get_voice_mode(), '未知')}")
 
 async def main(page):
     app = MobileChatApp()

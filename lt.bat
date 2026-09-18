@@ -72,6 +72,7 @@ echo .flet/
 REM ========== 4. 创建 GitHub Actions workflow ==========
 echo [4/7] 检查 GitHub Actions 配置...
 if not exist .github\workflows mkdir .github\workflows
+if exist .github\workflows\build-apk.yml del .github\workflows\build-apk.yml
 if not exist .github\workflows\build-apk.yml (
     (
 echo name: Build Android APK
@@ -112,11 +113,11 @@ echo.
 echo       - name: Install Flet and dependencies
 echo         run: ^|
 echo           python -m pip install --upgrade pip
-echo           pip install "flet==0.86.5" "flet-audio>=0.86.0" "flet-android-notifications>=0.11.0" "cryptography>=42.0.0" "pyjnius>=1.6.1"
+echo           pip install "flet==0.86.5" "flet-audio>=0.86.0" "flet-android-notifications>=0.11.0" "cryptography>=42.0.0" "pyjnius>=1.6.1" "psutil>=7.0.0"
 echo.
 echo       - name: Generate Flutter project (first build)
 echo         run: ^|
-echo           flet build apk --module-name mobile_main --project "LanTalk" --org "com.lantalk" --product "lantalk" --build-number "3" --build-version "3.0.0" --clear-cache
+echo           flet build apk --module-name mobile_main --project "LanTalk" --org "com.lantalk" --product "lantalk" --build-number "4" --build-version "3.7.2"
 echo         continue-on-error: true
 echo.
 echo       - name: Patch Flutter project for native notifications
@@ -128,7 +129,7 @@ echo         run: ^|
 echo           cd build/flutter
 echo           export SERIOUS_PYTHON_SITE_PACKAGES="$GITHUB_WORKSPACE/build/site-packages"
 echo           export SERIOUS_PYTHON_APP="$GITHUB_WORKSPACE/build/python-app"
-echo           flutter build apk --release --build-name "3.0.0" --build-number "3"
+echo           flutter build apk --release --build-name "3.7.2" --build-number "4"
 echo.
 echo       - name: Upload APK
 echo         uses: actions/upload-artifact@v4
@@ -150,7 +151,7 @@ if not exist .git (
     echo   Git 仓库已存在
 )
 git add .
-git commit -m "LanTalk mobile v3.0.0 - build APK" >nul 2>&1
+git commit -m "LanTalk mobile v3.7.2 - build APK" >nul 2>&1
 if errorlevel 1 (
     echo   没有新的更改需要提交
 ) else (
