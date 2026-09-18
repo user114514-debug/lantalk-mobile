@@ -139,10 +139,13 @@ def patch_android_audio():
                 self._log_fn = log_fn
                 self._started = False
                 self._buf = _new_byte_array(frame_bytes)
+                _trace("AudioInput: byte[] ready, about to startRecording()")
                 try:
                     self._recorder.startRecording()
                     self._started = True
+                    _trace("AudioInput: startRecording() OK")
                 except Exception as e:
+                    _trace(f"AudioInput: startRecording() PY-EXC: {e!r}")
                     self._log(f"startRecording() failed: {e}")
                     try:
                         self._recorder.release()
@@ -183,6 +186,7 @@ def patch_android_audio():
                 try:
                     self._track.play()
                 except Exception as e:
+                    _trace(f"AudioTrack.play() PY-EXC: {e!r}")
                     self._log(f"AudioTrack.play() failed: {e}")
                     try:
                         self._track.release()
@@ -221,13 +225,16 @@ def patch_android_audio():
 
             # 1) 先确认权限（用 android_perms，不再用错误的 kivy 类名）
             try:
-                if not has_record_permission():
+                _hp = has_record_permission()
+                _trace(f"create_audio: has_record_permission={_hp}")
+                if not _hp:
                     raise ab.AudioUnavailableError(
                         "麦克风权限未授予，请先在系统设置中允许录音")
             except ab.AudioUnavailableError:
+                _trace("create_audio: permission NOT granted, abort")
                 raise
             except Exception as e:
-                # 权限检查本身出错，不阻止继续尝试（可能权限已授予但检查失败）
+                _trace(f"create_audio: permission check error: {e!r}")
                 print(f"[AudioFix] permission check error: {e}")
 
             # 2) 创建 AudioRecord
@@ -247,11 +254,12 @@ def patch_android_audio():
                 min_rec = int(AudioRecord.getMinBufferSize(sample_rate, in_ch, enc))
                 if min_rec <= 0:
                     min_rec = frame_size_bytes * 4
-                print(f"[AudioFix] creating AudioRecord: sr={sample_rate}, min_buf={min_rec}")
+                _trace(f"create_audio: getMinBufferSize={min_rec}, about to construct AudioRecord")
                 recorder = AudioRecord(audio_source, sample_rate, in_ch, enc,
                                        max(min_rec, frame_size_bytes * 4))
+                _trace("create_audio: AudioRecord constructed, getState()...")
                 state = int(recorder.getState())
-                print(f"[AudioFix] AudioRecord state={state} (1=initialized)")
+                _trace(f"create_audio: AudioRecord state={state} (1=initialized)")
                 if state != int(AudioRecord.STATE_INITIALIZED):
                     try:
                         recorder.release()
@@ -269,10 +277,11 @@ def patch_android_audio():
                 min_play = int(AudioTrack.getMinBufferSize(sample_rate, out_ch, enc))
                 if min_play <= 0:
                     min_play = frame_size_bytes * 4
-                print(f"[AudioFix] creating AudioTrack: sr={sample_rate}, min_buf={min_play}")
+                _trace(f"create_audio: about to construct AudioTrack min_buf={min_play}")
                 track = AudioTrack(AudioManager.STREAM_MUSIC, sample_rate, out_ch, enc,
                                    max(min_play, frame_size_bytes * 4),
                                    AudioTrack.MODE_STREAM)
+                _trace("create_audio: AudioTrack constructed")
             except Exception as e:
                 try:
                     recorder.release()
@@ -280,8 +289,12 @@ def patch_android_audio():
                     pass
                 raise ab.AudioUnavailableError(f"无法打开扬声器：{e}")
 
-            print("[AudioFix] audio streams created OK")
-            return _SafeAndroidInput(recorder, frame_size_bytes), _SafeAndroidOutput(track), None
+            _trace("create_audio: streams ready, constructing Input/Output wrappers")
+            _in = _SafeAndroidInput(recorder, frame_size_bytes)
+            _trace("create_audio: Input wrapper OK, constructing Output (play)")
+            _out = _SafeAndroidOutput(track)
+            _trace("create_audio: DONE, both streams live")
+            return _in, _out, None
 
         # 替换
         ab._create_android = _safe_create_android

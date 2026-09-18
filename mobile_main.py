@@ -2652,27 +2652,37 @@ try:
     _orig_start_voice = MobileChatApp._start_voice
 
     def _start_voice_with_perm(self, e):
+        _trace_event("=== TAP voice -> _start_voice_with_perm ===")
         try:
             _need = _android_perms.is_android() and not _android_perms.has_record_permission()
-        except Exception:
+            _trace_event(f"voice perm needed={_need}")
+        except Exception as _pe:
             _need = False
+            _trace_event(f"voice perm check EXC: {_pe!r}")
         if not _need:
+            _trace_event("perm already granted -> call original _start_voice")
             return _orig_start_voice(self, e)
 
         def _perm_worker():
             _ok = False
             try:
+                _trace_event("requesting RECORD_AUDIO permission...")
                 _ok = _android_perms.request_record_permission()
-            except Exception:
+                _trace_event(f"permission request returned ok={_ok}")
+            except Exception as _re:
                 _ok = False
+                _trace_event(f"permission request EXC: {_re!r}")
 
             def _cont():
                 if _ok:
+                    _trace_event("perm granted -> call original _start_voice")
                     try:
                         _orig_start_voice(self, e)
                     except Exception as _ex:
+                        _trace_event(f"start voice after perm EXC: {_ex!r}")
                         self._log(f"start voice after perm failed: {_ex}")
                 else:
+                    _trace_event("permission DENIED by user")
                     try:
                         self._append_system(t("需要麦克风权限才能语音通话，请在系统设置中允许"))
                     except Exception:
