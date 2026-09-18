@@ -763,6 +763,7 @@ class MobileChatApp:
                 payload = self.client.login(username, password)
                 if payload.get("ok") or payload.get("type") == "login_ok":
                     self._reconnect_attempts = 0  # 登录成功，重置重连计数
+                    self._init_crypto()  # 增量：初始化端到端加密会话
                     self.client.start_receive(
                         self._on_message, self._on_connection_close,
                         on_kicked=self._on_kicked, on_pong=self._on_pong)
@@ -1098,7 +1099,31 @@ class MobileChatApp:
                 return t(key).format(who=text[:-len(suffix)])
         return text
 
+    def _init_crypto(self):
+        """增量：初始化端到端加密私聊会话（独立模块 crypto_session）。"""
+        try:
+            from crypto_session import CryptoSessionManager
+            mgr = CryptoSessionManager(mode="relay")
+            mgr.set_self_username(self.client.username or "")
+            mgr.set_transport(self.client.send_private_message)
+            mgr.on_status = lambda _txt: print("[crypto]", _txt)
+            mgr.on_security_alert = lambda peer, kind, msg: self._append_system(
+                f"⚠️ 安全拦截({kind}): {msg}")
+            self._crypto_mgr = mgr
+            self._crypto_dispatch = mgr.wrap_on_message(
+                lambda p: self._ui(self._handle_message(p)))
+            print("[crypto] session manager ready")
+        except Exception as e:
+            print(f"[crypto] init failed: {e}")
+            self._crypto_mgr = None
+            self._crypto_dispatch = None
+
     def _on_message(self, payload):
+        # 增量：端到端加密会话拦截 LT1:KEY/ENC 信令、解密密文
+        _dispatch = getattr(self, "_crypto_dispatch", None)
+        if _dispatch is not None:
+            _dispatch(payload)
+            return
         self._ui(self._handle_message(payload))
 
     async def _handle_message(self, payload):
@@ -1210,8 +1235,12 @@ class MobileChatApp:
                 self.client.send_text(text)
             else:
                 target = self.current_conv[7:]
-                await self._run_in_thread(lambda: self.client._temp_request("private_chat", {
-                    "username": self.client.username, "target": target, "text": text}))
+                _crypto_mgr = getattr(self, "_crypto_mgr", None)
+                if _crypto_mgr is not None:  # 增量：私聊走端到端加密
+                    await self._run_in_thread(lambda: _crypto_mgr.send_encrypted(target, text))
+                else:
+                    await self._run_in_thread(lambda: self.client._temp_request("private_chat", {
+                        "username": self.client.username, "target": target, "text": text}))
             # 发送后立即本地显示自己的消息，不需要等服务器广播
             self.conversations.setdefault(self.current_conv, [])
             self.conversations[self.current_conv].append(
