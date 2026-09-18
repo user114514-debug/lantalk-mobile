@@ -379,8 +379,13 @@ class MobileChatApp:
         if _is_android():
             try:
                 _trace_event("FilePicker init start")
-                # Flet 0.86：FilePicker 是非视觉控件，必须挂 page.services
-                self._file_picker = ft.FilePicker(on_result=self._on_file_picked)
+                # Flet 0.86.5：FilePicker 是 Service，构造只接受 on_upload/data/key/ref，
+                # 不能传 on_result/visible；必须无参构造后再给实例 on_result 赋值，挂 page.services
+                self._file_picker = ft.FilePicker()
+                try:
+                    self._file_picker.on_result = self._on_file_picked
+                except Exception as _ev:
+                    _trace_event(f"FilePicker bind on_result FAILED: {_ev!r}")
                 _mount_service(page, self._file_picker)
                 _trace_event(f"FilePicker mounted, has services={hasattr(page, 'services')}")
                 try:
