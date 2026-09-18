@@ -52,7 +52,7 @@ def export_crash_logs(log_dir="crash_logs"):
 
         log_files = [
             f for f in os.listdir(log_dir)
-            if f.startswith("crash_") and f.endswith(".txt")
+            if (f.startswith("crash_") or f == "debug_trace.txt") and f.endswith(".txt")
         ]
         if not log_files:
             return 0, "", "没有崩溃日志"

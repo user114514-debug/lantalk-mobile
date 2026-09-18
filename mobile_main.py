@@ -370,6 +370,10 @@ class MobileChatApp:
                 except Exception:
                     pass
                 page.overlay.append(self._file_picker)
+                try:
+                    page.update()
+                except Exception:
+                    pass
                 self._file_picker_ok = True
             except Exception as e:
                 self._log(f"FilePicker init failed: {e}")
@@ -2508,9 +2512,21 @@ def pick_photo_native(app, path_display, send_btn, dlg):
                 _f.write(f"[{time.strftime('%H:%M:%S')}] [PICK] {msg}\n")
         except Exception: pass
     _ft("pick_photo_native called")
+    # Flet/serious_python 环境没有 kivy 的 android.activity 模块，原生
+    # Photo Picker 的 onActivityResult 回调无法绑定，直接走 Flet FilePicker
+    # （底层 Flutter file_picker，Android 稳定且自动把 content URI 复制为缓存文件）
+    try:
+        import sys as _sys
+        _is_droid = "android" in _sys.modules or hasattr(_sys, "getandroidapilevel")
+    except Exception:
+        _is_droid = False
+    if _is_droid:
+        _ft("android: directly use Flet FilePicker")
+        app._pick_file_with_fallback(path_display, send_btn, dlg)
+        return
     try:
         from android_photo_picker import AndroidPhotoPicker
-        _ft("android_photo_picker import OK")
+        _ft("android_photo_picker import OK (desktop test)")
     except ImportError as ie:
         _ft(f"android_photo_picker import FAIL: {ie!r}, fallback to flet")
         app._pick_file_with_fallback(path_display, send_btn, dlg)
@@ -2783,7 +2799,22 @@ except Exception as _saf_hook_err:
 # ======================================================================
 try:
     from android_audio_fix import patch_android_audio
-    patch_android_audio()
+    _audio_patched = patch_android_audio()
+    try:
+        import os as _os
+        _os.makedirs("crash_logs", exist_ok=True)
+        with open(_os.path.join("crash_logs","debug_trace.txt"),"a",encoding="utf-8") as _tf:
+            _tf.write(f"[BOOT] android_audio_fix patch result={_audio_patched}\n")
+    except Exception:
+        pass
+except Exception as _audio_patch_err:
+    try:
+        import os as _os
+        _os.makedirs("crash_logs", exist_ok=True)
+        with open(_os.path.join("crash_logs","debug_trace.txt"),"a",encoding="utf-8") as _tf:
+            _tf.write(f"[BOOT] android_audio_fix IMPORT/PATCH FAILED: {_audio_patch_err!r}\n")
+    except Exception:
+        pass
 except Exception as _audio_fix_err:
     print(f"[AudioFix] init failed(ignored): {_audio_fix_err}")
 
