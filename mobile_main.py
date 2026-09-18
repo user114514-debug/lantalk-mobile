@@ -2862,3 +2862,32 @@ if __name__ == "__main__":
         ft.run(main)
     except AttributeError:
         ft.app(target=main)
+
+
+# ======================================================================
+# 主界面右下角悬浮【导出崩溃日志】FAB（新增，不修改原有代码）：
+# 进聊天页后即在右下角显示一个🐛按钮，点击导出 crash_logs/ 到公共 Download。
+# ======================================================================
+try:
+    from crash_export import build_export_button as _build_crash_btn
+
+    _orig_show_chat_fab = MobileChatApp.show_chat
+
+    async def _show_chat_with_fab(self, *args, **kwargs):
+        _r = await _orig_show_chat_fab(self, *args, **kwargs)
+        try:
+            if self.page is not None:
+                btn = _build_crash_btn(self)
+                # FAB 悬浮在右下角，最显眼；若原页已有 FAB 则追加为 secondary
+                try:
+                    self.page.floating_action_button = btn
+                except Exception:
+                    pass
+                self.page.update()
+        except Exception as _fab_err:
+            print(f"[CrashFAB] add failed(ignored): {_fab_err}")
+        return _r
+
+    MobileChatApp.show_chat = _show_chat_with_fab
+except Exception as _fab_hook_err:
+    print(f"[CrashFAB] hook failed(ignored): {_fab_hook_err}")
