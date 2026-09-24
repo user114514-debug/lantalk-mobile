@@ -36,33 +36,14 @@ jobs:
       - name: Install Flet and dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install "flet==0.86.5" "flet-audio>=0.86.0" "flet-android-notifications>=0.11.0" "cryptography>=42.0.0" "pyjnius>=1.6.1"
+          pip install "flet==0.86.5" "flet-audio>=0.86.0" "cryptography>=42.0.0" "pyjnius>=1.6.1" "psutil>=5.9.0"
 
-      - name: Generate Flutter project (first build)
+      - name: Build APK
         run: |
-          flet build apk --module-name mobile_main --project "LanTalk" --org "com.lantalk" --product "lantalk" --build-number "3" --build-version "3.0.0" --clear-cache
-        continue-on-error: true
-
-      - name: Patch Flutter project for native notifications
-        run: |
-          flet-android-notifications-patch --project-root build/flutter
-
-      - name: Build patched APK
-        run: |
-          cd build/flutter
-          # flet build apk 在内部 flutter build 时会注入这两个环境变量，
-          # 但我们在 flet build 之后手动运行 flutter build，需要手动设置，
-          # 否则 serious_python_android 的 build.gradle.kts 会报错：
-          # SERIOUS_PYTHON_SITE_PACKAGES environment variable is not set
-          export SERIOUS_PYTHON_SITE_PACKAGES="$GITHUB_WORKSPACE/build/site-packages"
-          export SERIOUS_PYTHON_APP="$GITHUB_WORKSPACE/build/python-app"
-          # 必须显式带 --build-name/--build-number：版本号是 flet 通过 flutter build
-          # 命令行传入的、不写进 pubspec；手动 flutter build 若不带会回退默认 1.0.0+1，
-          # 导致安装后系统里显示 1.0.0。versionCode=3 对应 3.0.0 且大于旧版以便覆盖安装。
-          flutter build apk --release --build-name "3.0.0" --build-number "3"
+          flet build apk --module-name mobile_main --project "LanTalk" --org "com.lantalk" --product "lantalk" --build-number "4" --build-version "3.7.2"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: lantalk-apk
-          path: build/flutter/build/app/outputs/flutter-apk/app-release.apk
+          path: build/apk/*.apk
