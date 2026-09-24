@@ -164,6 +164,7 @@ def patch_android_audio():
                 need = self._frame_bytes
                 n = int(self._recorder.read(self._buf, 0, need))
                 if n <= 0:
+                    _trace(f"AudioRecord.read returned {n}, returning silence")
                     return b"\x00" * need
                 try:
                     return bytes(bytearray(self._buf[:n]))
@@ -208,9 +209,11 @@ def patch_android_audio():
                     try:
                         buf = _new_byte_array(len(data))
                         _fill_byte_array(buf, data)
-                        self._track.write(buf, 0, len(data))
-                    except Exception:
-                        pass
+                        written = self._track.write(buf, 0, len(data))
+                        if written < 0:
+                            _trace(f"AudioTrack.write returned {written} (error), len={len(data)}")
+                    except Exception as e:
+                        _trace(f"AudioTrack.write PY-EXC: {e!r}, len={len(data)}")
 
             def close(self):
                 for fn in ("stop", "release"):

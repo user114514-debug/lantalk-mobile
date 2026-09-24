@@ -202,6 +202,8 @@ class VoiceCall:
     def _send_loop(self):
         room_bytes = self.room_id.encode("utf-8")
         room_hdr = struct.pack("!H", len(room_bytes)) + room_bytes
+        _log_t = time.time()
+        _log_sent = 0
         while self._running:
             try:
                 if self._muted or not self._stream_in:
@@ -217,12 +219,19 @@ class VoiceCall:
                     self.sock.sendto(packet, (self.server_ip, self.server_port))
                 self._seq = (self._seq + 1) & 0xFFFFFFFF
                 self.packets_sent += 1
+                _log_sent += 1
+                if time.time() - _log_t > 5:
+                    print(f"[语音] 发送统计: {_log_sent} pkts/5s, total={self.packets_sent}, server={self.server_ip}:{self.server_port}, ipv6={getattr(self,'_ipv6',False)}")
+                    _log_t = time.time()
+                    _log_sent = 0
             except Exception as e:
                 if self._running:
                     print(t("[语音] 发送异常: {e}").format(e=e))
                 time.sleep(0.05)
 
     def _recv_loop(self):
+        _log_t = time.time()
+        _log_recv = 0
         while self._running:
             try:
                 self.sock.settimeout(0.5)
@@ -232,8 +241,13 @@ class VoiceCall:
                 seq = struct.unpack("!I", data[:4])[0]
                 pcm_data = data[4:]
                 self._update_stats(seq)
+                _log_recv += 1
                 if self._stream_out and pcm_data and self._speaker_on:
                     self._stream_out.write(pcm_data)
+                if time.time() - _log_t > 5:
+                    print(f"[语音] 接收统计: {_log_recv} pkts/5s, total={self.packets_received}, lost={self.packets_lost}, from={addr}")
+                    _log_t = time.time()
+                    _log_recv = 0
             except socket.timeout:
                 continue
             except Exception as e:
