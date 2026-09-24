@@ -303,6 +303,7 @@ def _create_android(sample_rate, channels, frame_size_bytes):
     AudioFormat = autoclass("android.media.AudioFormat")
     AudioManager = autoclass("android.media.AudioManager")
     MediaRecorder = autoclass("android.media.MediaRecorder")
+    AudioSource = autoclass("android.media.MediaRecorder$AudioSource")
     in_ch = AudioFormat.CHANNEL_IN_MONO if channels == 1 else AudioFormat.CHANNEL_IN_STEREO
     out_ch = AudioFormat.CHANNEL_OUT_MONO if channels == 1 else AudioFormat.CHANNEL_OUT_STEREO
     enc = AudioFormat.ENCODING_PCM_16BIT
@@ -310,7 +311,7 @@ def _create_android(sample_rate, channels, frame_size_bytes):
         min_rec = int(AudioRecord.getMinBufferSize(sample_rate, in_ch, enc))
         if min_rec <= 0:
             min_rec = frame_size_bytes * 4
-        recorder = AudioRecord(MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+        recorder = AudioRecord(AudioSource.VOICE_COMMUNICATION,
                                sample_rate, in_ch, enc, max(min_rec, frame_size_bytes * 4))
         if recorder.getState() != AudioRecord.STATE_INITIALIZED:
             raise AudioUnavailableError(t("麦克风初始化失败（可能未授予录音权限）"))

@@ -5,7 +5,7 @@ android_audio_fix.py — LanTalk 移动端语音闪退修复（新增独立模�
 【解决的问题】
 原 audio_backend.py 的 _create_android() 在 Android 上一点语音就闪退，原因：
   1. _ensure_record_permission() 用错误的 Activity 类名（kivy/example），权限检查失效；
-  2. AudioRecord 用 MediaRecorder.AudioSource.VOICE_COMMUNICATION，
+  2. AudioRecord 用 AudioSource.VOICE_COMMUNICATION，
      在部分设备（荣耀 MagicOS 等）上需要通话模式，无电话服务时 native 崩溃；
   3. startRecording() 在 __init__ 里直接调，native 层崩溃 Python try-except 拦不住；
   4. 没有细粒度日志，无法定位崩在哪一步。
@@ -242,13 +242,14 @@ def patch_android_audio():
             AudioFormat = autoclass("android.media.AudioFormat")
             AudioManager = autoclass("android.media.AudioManager")
             MediaRecorder = autoclass("android.media.MediaRecorder")
+            AudioSource = autoclass("android.media.MediaRecorder$AudioSource")
 
             in_ch = AudioFormat.CHANNEL_IN_MONO if channels == 1 else AudioFormat.CHANNEL_IN_STEREO
             out_ch = AudioFormat.CHANNEL_OUT_MONO if channels == 1 else AudioFormat.CHANNEL_OUT_STEREO
             enc = AudioFormat.ENCODING_PCM_16BIT
 
             # 用 MIC 代替 VOICE_COMMUNICATION（后者在部分设备需要通话模式会崩溃）
-            audio_source = MediaRecorder.AudioSource.MIC
+            audio_source = AudioSource.MIC
 
             try:
                 min_rec = int(AudioRecord.getMinBufferSize(sample_rate, in_ch, enc))

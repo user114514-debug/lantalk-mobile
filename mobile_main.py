@@ -397,6 +397,16 @@ class MobileChatApp:
             except Exception as e:
                 _trace_event(f"FilePicker init FAILED: {e!r}")
                 self._log(f"FilePicker init failed: {e}")
+        # 启动时后台请求所有需要的权限（麦克风 + 存储/媒体），避免用户手动去设置开
+        if _is_android():
+            def _request_all_perms():
+                try:
+                    from android_perms import ensure_all_permissions
+                    rec, sto = ensure_all_permissions(timeout=30)
+                    _trace_event(f"startup perms: record={rec} storage={sto}")
+                except Exception as _e:
+                    _trace_event(f"startup perms failed: {_e!r}")
+            threading.Thread(target=_request_all_perms, daemon=True).start()
         # ===== 安卓端音效初始化（ft.Audio）=====
         # 注意：
         # 1. flet build apk 必须加 --include-packages flet_audio，否则原生音频插件不会打包进 APK。
@@ -763,6 +773,7 @@ class MobileChatApp:
                 payload = self.client.login(username, password)
                 if payload.get("ok") or payload.get("type") == "login_ok":
                     self._reconnect_attempts = 0  # 登录成功，重置重连计数
+                    self._ping_send_time = None  # 重置心跳时间戳，防看门狗误判旧连接僵死
                     self._init_crypto()  # 增量：初始化端到端加密会话
                     self.client.start_receive(
                         self._on_message, self._on_connection_close,
@@ -2337,6 +2348,7 @@ class MobileChatApp:
     def _start_heartbeat(self):
         self._stop_heartbeat()  # 先停旧的，防止重连后心跳重复
         self._heartbeat_running = True
+        self._ping_send_time = None  # 心跳启动时清空旧时间戳
         self._heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
         self._heartbeat_thread.start()
 
@@ -2587,7 +2599,28 @@ def pick_photo_native(app, path_display, send_btn, dlg):
     except Exception:
         _is_droid = False
     if _is_droid:
-        _ft("android: directly use Flet FilePicker")
+        # 优先用 AndroidX registerForActivityResult 原生选择器（绕过 Flet file_picker 包，
+        # 该包在荣耀 MagicOS 等 ROM 上 launch 成功但系统选择器不弹窗）
+        try:
+            from android_native_picker import pick_file_native
+            def _on_native_result(path):
+                _ft(f"native picker result: {path!r}")
+                if path:
+                    try:
+                        app._on_file_picked_path(path)
+                        _ft(f"_on_file_picked_path OK for {path!r}")
+                    except Exception as ex:
+                        _ft(f"_on_file_picked_path FAIL: {ex!r}")
+                        app._pick_file_with_fallback(path_display, send_btn, dlg)
+                else:
+                    _ft("native picker returned None, fallback to Flet FilePicker")
+                    app._pick_file_with_fallback(path_display, send_btn, dlg)
+            ok = pick_file_native(_on_native_result, mime_types=["*/*"])
+            _ft(f"pick_file_native returned {ok}")
+            if ok:
+                return
+        except Exception as ex:
+            _ft(f"native picker import/init failed: {ex!r}, fallback to Flet FilePicker")
         app._pick_file_with_fallback(path_display, send_btn, dlg)
         return
     try:

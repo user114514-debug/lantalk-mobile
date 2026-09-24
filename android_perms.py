@@ -211,3 +211,98 @@ def ensure_record_permission(timeout=30.0):
     if has_record_permission():
         return True
     return request_record_permission(timeout=timeout)
+
+
+# ---------------------------------------------------------------------- #
+# 存储/媒体权限（追加，不改原有代码）
+# ---------------------------------------------------------------------- #
+STORAGE_PERMS_33 = [
+    "android.permission.READ_MEDIA_IMAGES",
+    "android.permission.READ_MEDIA_VIDEO",
+    "android.permission.READ_MEDIA_AUDIO",
+]
+STORAGE_PERMS_OLD = ["android.permission.READ_EXTERNAL_STORAGE"]
+
+
+def get_storage_perms():
+    """根据 SDK 版本返回需要的存储权限列表。"""
+    if not is_android():
+        return []
+    try:
+        from jnius import autoclass
+        BuildVersion = autoclass("android.os.Build$VERSION")
+        if int(BuildVersion.SDK_INT) >= 33:
+            return list(STORAGE_PERMS_33)
+        return list(STORAGE_PERMS_OLD)
+    except Exception:
+        return list(STORAGE_PERMS_OLD)
+
+
+def has_storage_permission():
+    """同步判断是否已获得存储/媒体权限。桌面端恒为 True。"""
+    if not is_android():
+        return True
+    act = get_activity()
+    if act is None:
+        return False
+    for perm in get_storage_perms():
+        if not _is_granted(act, perm):
+            return False
+    return True
+
+
+def request_storage_permission(timeout=30.0, request_code=20260924):
+    """
+    弹出系统权限对话框请求存储/媒体权限并等待用户选择，返回最终是否全部授权。
+    - 已全部授权：立即返回 True；
+    - 未授权：在UI线程 requestPermissions，后台轮询等待结果（默认最多30秒）；
+    - 必须在后台线程调用（内部会等待），不要在 UI/事件循环线程直接调用。
+    """
+    if not is_android():
+        return True
+    act = get_activity()
+    if act is None:
+        return False
+    perms = get_storage_perms()
+    need = [p for p in perms if not _is_granted(act, p)]
+    if not need:
+        return True
+
+    requested = threading.Event()
+
+    def _do_request():
+        try:
+            arr = _java_string_array(need)
+            act.requestPermissions(arr, int(request_code))
+        except Exception:
+            pass
+        finally:
+            requested.set()
+
+    if not _run_on_ui_thread(act, _do_request):
+        _do_request()
+    requested.wait(2.0)
+
+    deadline = time.time() + float(timeout)
+    while time.time() < deadline:
+        cur = get_activity() or act
+        if all(_is_granted(cur, p) for p in need):
+            return True
+        time.sleep(0.25)
+    return all(_is_granted(get_activity() or act, p) for p in need)
+
+
+def ensure_storage_permission(timeout=30.0):
+    """便捷入口：已授权直接 True，否则弹窗申请并等待结果。"""
+    if not is_android():
+        return True
+    if has_storage_permission():
+        return True
+    return request_storage_permission(timeout=timeout)
+
+
+def ensure_all_permissions(timeout=30.0):
+    """启动时一次性请求麦克风 + 存储/媒体权限，返回 (record_ok, storage_ok)。"""
+    rec = ensure_record_permission(timeout=timeout)
+    sto = ensure_storage_permission(timeout=timeout)
+    return rec, sto
