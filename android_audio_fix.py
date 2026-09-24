@@ -243,6 +243,7 @@ def patch_android_audio():
             AudioManager = autoclass("android.media.AudioManager")
             MediaRecorder = autoclass("android.media.MediaRecorder")
             AudioSource = autoclass("android.media.MediaRecorder$AudioSource")
+            AudioTrack = autoclass("android.media.AudioTrack")
 
             in_ch = AudioFormat.CHANNEL_IN_MONO if channels == 1 else AudioFormat.CHANNEL_IN_STEREO
             out_ch = AudioFormat.CHANNEL_OUT_MONO if channels == 1 else AudioFormat.CHANNEL_OUT_STEREO
