@@ -72,12 +72,29 @@ def _get_activity():
         return None
 
 
-def _has_activity_result_registry(act):
-    """检查 Activity 是否有 AndroidX ActivityResultRegistry（ComponentActivity）。"""
+def _describe_activity(act):
+    """打印 Activity 的真实类名和完整父类链，用于判断是否 ComponentActivity。"""
     try:
-        return hasattr(act, "getActivityResultRegistry")
-    except Exception:
-        return False
+        cls = act.getClass()
+        chain = []
+        while cls is not None:
+            chain.append(cls.getName())
+            cls = cls.getSuperclass()
+        _trace("Activity class chain: " + " -> ".join(chain))
+    except Exception as e:
+        _trace(f"describe activity failed: {e!r}")
+
+
+def _try_get_registry(act):
+    """直接尝试调用 getActivityResultRegistry()，不依赖 pyjnius 的 hasattr（对继承方法不可靠）。
+    返回 registry，方法不存在或返回 null 时返回 None。"""
+    try:
+        registry = act.getActivityResultRegistry()
+        _trace(f"getActivityResultRegistry() -> {registry!r}")
+        return registry
+    except Exception as e:
+        _trace(f"getActivityResultRegistry() not available: {e!r}")
+        return None
 
 
 def _make_callback(on_result):
@@ -113,7 +130,7 @@ def _ensure_launcher(act):
         try:
             from jnius import autoclass
 
-            registry = act.getActivityResultRegistry()
+            registry = _try_get_registry(act)
             if registry is None:
                 _trace("getActivityResultRegistry returned None")
                 return None
@@ -177,9 +194,9 @@ def pick_file_native(on_result, mime_types=None):
         _trace("no activity, return False")
         return False
 
-    if not _has_activity_result_registry(act):
-        _trace("activity has no ActivityResultRegistry, return False")
-        return False
+    # 打印真实类链（判断是否 ComponentActivity），然后直接尝试注册，
+    # 不再用 pyjnius hasattr 预判（对继承自父类的方法会误判为不存在）
+    _describe_activity(act)
 
     launcher = _ensure_launcher(act)
     if launcher is None:
@@ -190,9 +207,25 @@ def pick_file_native(on_result, mime_types=None):
         mime_types = ["*/*"]
 
     try:
-        from jnius import jarray, autoclass
+        from jnius import autoclass
         JString = autoclass("java.lang.String")
-        input_arr = jarray.array(list(mime_types), JString)
+        # 创建 String[]，jarray 不可用时用 java.lang.reflect.Array 兜底
+        input_arr = None
+        try:
+            from jnius import jarray
+            input_arr = jarray.array(list(mime_types), JString)
+        except Exception as je:
+            _trace(f"jarray failed, use reflect: {je!r}")
+            try:
+                JArray = autoclass("java.lang.reflect.Array")
+                input_arr = JArray.newInstance(JString, len(mime_types))
+                for i, m in enumerate(mime_types):
+                    JArray.set(input_arr, i, JString(m))
+            except Exception as re2:
+                _trace(f"reflect array failed: {re2!r}")
+        if input_arr is None:
+            _trace("failed to build mime input array")
+            return False
         _trace(f"launching with mime_types={mime_types}")
         # 必须在 UI 线程 launch
         from android_perms import _run_on_ui_thread

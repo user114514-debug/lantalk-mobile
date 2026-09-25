@@ -849,7 +849,7 @@ class MobileChatApp:
 
         # 顶部状态栏（毛玻璃）
         self._net_text = ft.Text(t("延迟 --ms  丢包 --%"), size=13, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS, color=ft.Colors.with_opacity(0.6, ft.Colors.GREY_800))
-        self._nick_text = ft.Text(self.client.username or "", size=15, weight=ft.FontWeight.W_600, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS, text_align=ft.TextAlign.RIGHT)
+        self._nick_text = ft.Text(self.client.username or "", size=15, weight=ft.FontWeight.W_600, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS, text_align=ft.TextAlign.RIGHT, expand=True)
         settings_btn = ft.Container(
             content=ft.Icon(ft.icons.SETTINGS, size=20, color="#0A84FF"),
             width=36, height=36, border_radius=18, alignment=ft.alignment.center,
@@ -3033,11 +3033,7 @@ async def main(page):
     await app.setup(page)
 
 
-if __name__ == "__main__":
-    try:
-        ft.run(main)
-    except AttributeError:
-        ft.app(target=main)
+# （ft.run 阻塞入口已移至文件最末尾，确保下方所有 hook 在 Android 上先执行）
 
 
 # ======================================================================
@@ -3070,22 +3066,9 @@ except Exception as _fab_hook_err:
 
 
 # ======================================================================
-# 关键步骤埋点（新增，不修改原有代码）：在语音/文件等易崩溃操作前
-# 写一行到 crash_logs/debug_trace.txt。native 崩溃后重启 APP，导出日志
-# 就能看到最后停在哪一步，定位 native 闪退点。
+# 关键步骤埋点：在语音/文件等操作前写一行到 crash_logs/debug_trace.txt。
+# _trace_event 统一定义在文件开头，此处不再重复定义。
 # ======================================================================
-def _trace_event(msg):
-    try:
-        import os, time
-        d = "crash_logs"
-        try:
-            os.makedirs(d, exist_ok=True)
-        except Exception:
-            pass
-        with open(os.path.join(d, "debug_trace.txt"), "a", encoding="utf-8") as f:
-            f.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
-    except Exception:
-        pass
 
 
 # 包装语音启动
@@ -3122,3 +3105,15 @@ except Exception:
 
 # APP 启动时写一行标记
 _trace_event("=== APP process started ===")
+
+
+# ======================================================================
+# 阻塞入口放在文件最末尾：以上所有 monkey-patch / hook / 埋点都要在
+# ft.run(main) 之前完成，否则 Android 上 Flet 在模块加载完前进入 setup，
+# 后面的代码不会执行，hook 全部失效。
+# ======================================================================
+if __name__ == "__main__":
+    try:
+        ft.run(main)
+    except AttributeError:
+        ft.app(target=main)
