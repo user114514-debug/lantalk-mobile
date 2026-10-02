@@ -97,6 +97,25 @@ def is_android():
         return False
 
 
+def _pcm_peak(data):
+    """计算 PCM 16bit little-endian 数据的最大振幅（0~32767），用于判断是否静音。"""
+    try:
+        import array as _arr
+        usable = len(data) if len(data) % 2 == 0 else len(data) - 1
+        if usable <= 0:
+            return -1
+        a = _arr.array('h')
+        a.frombytes(bytes(data[:usable]))
+        peak = 0
+        for s in a:
+            v = s if s >= 0 else -s
+            if v > peak:
+                peak = v
+        return peak
+    except Exception:
+        return -1
+
+
 def patch_android_audio():
     """
     Monkey-patch audio_backend 模块。幂等，桌面端直接返回 False。
@@ -138,12 +157,17 @@ def patch_android_audio():
                 self._frame_bytes = frame_bytes
                 self._log_fn = log_fn
                 self._started = False
+                self._reads = 0
                 self._buf = _new_byte_array(frame_bytes)
                 _trace("AudioInput: byte[] ready, about to startRecording()")
                 try:
                     self._recorder.startRecording()
                     self._started = True
-                    _trace("AudioInput: startRecording() OK")
+                    try:
+                        _ss = int(self._recorder.getRecordingState())
+                        _trace(f"AudioInput: startRecording() OK, recordingState={_ss} (3=recording)")
+                    except Exception:
+                        _trace("AudioInput: startRecording() OK")
                 except Exception as e:
                     _trace(f"AudioInput: startRecording() PY-EXC: {e!r}")
                     self._log(f"startRecording() failed: {e}")
@@ -163,13 +187,21 @@ def patch_android_audio():
             def read(self, num_bytes):
                 need = self._frame_bytes
                 n = int(self._recorder.read(self._buf, 0, need))
+                self._reads += 1
+                cnt = self._reads
                 if n <= 0:
-                    _trace(f"AudioRecord.read returned {n}, returning silence")
+                    _trace(f"read #{cnt} returned {n} (ERROR/empty), need={need}, returning silence")
                     return b"\x00" * need
                 try:
-                    return bytes(bytearray(self._buf[:n]))
+                    data = bytes(bytearray(self._buf[:n]))
                 except Exception:
-                    return bytes((self._buf[i] & 0xFF) for i in range(n))
+                    data = bytes((self._buf[i] & 0xFF) for i in range(n))
+                # 前 6 次 + 每 30 次采样记录音量峰值
+                if cnt <= 6 or cnt % 30 == 0:
+                    peak = _pcm_peak(data)
+                    tag = "SILENCE!" if 0 <= peak < 80 else ("low" if peak < 500 else "voice OK")
+                    _trace(f"read #{cnt} n={n} peak={peak} {tag}")
+                return data
 
             def close(self):
                 for fn in ("stop", "release"):
@@ -185,8 +217,14 @@ def patch_android_audio():
                 self._track = track
                 self._log_fn = log_fn
                 self._lock = threading.Lock()
+                self._writes = 0
                 try:
                     self._track.play()
+                    try:
+                        _ps = int(self._track.getPlayState())
+                        _trace(f"AudioTrack.play() called, playState={_ps} (3=playing)")
+                    except Exception:
+                        _trace("AudioTrack.play() called")
                 except Exception as e:
                     _trace(f"AudioTrack.play() PY-EXC: {e!r}")
                     self._log(f"AudioTrack.play() failed: {e}")
@@ -207,14 +245,24 @@ def patch_android_audio():
                 if not data:
                     return
                 with self._lock:
+                    self._writes += 1
+                    cnt = self._writes
                     try:
                         buf = _new_byte_array(len(data))
                         _fill_byte_array(buf, data)
-                        written = self._track.write(buf, 0, len(data))
+                        written = int(self._track.write(buf, 0, len(data)))
+                        if cnt <= 6 or cnt % 30 == 0:
+                            peak = _pcm_peak(data)
+                            try:
+                                pstate = int(self._track.getPlayState())
+                            except Exception:
+                                pstate = -1
+                            tag = "SILENCE-in!" if 0 <= peak < 80 else "has data"
+                            _trace(f"write #{cnt} len={len(data)} written={written} playState={pstate} inPeak={peak} {tag}")
                         if written < 0:
-                            _trace(f"AudioTrack.write returned {written} (error), len={len(data)}")
+                            _trace(f"write #{cnt} returned ERROR code {written}, len={len(data)}")
                     except Exception as e:
-                        _trace(f"AudioTrack.write PY-EXC: {e!r}, len={len(data)}")
+                        _trace(f"write #{cnt} PY-EXC: {e!r}, len={len(data)}")
 
             def close(self):
                 for fn in ("stop", "release"):
@@ -279,6 +327,7 @@ def patch_android_audio():
 
         def _safe_create_android(sample_rate, channels, frame_size_bytes):
             from jnius import autoclass
+            _trace(f"create_audio ENTER: sample_rate={sample_rate} channels={channels} frame_bytes={frame_size_bytes}")
 
             # 1) 先确认权限（用 android_perms，不再用错误的 kivy 类名）
             try:
@@ -311,17 +360,17 @@ def patch_android_audio():
 
             # 通话模式已设置，用 VOICE_COMMUNICATION 源（降噪、AEC，录到真人声）
             audio_source = AudioSource.VOICE_COMMUNICATION
+            _trace(f"create_audio: in_ch={in_ch} out_ch={out_ch} enc={enc} source=VOICE_COMMUNICATION")
 
             try:
                 min_rec = int(AudioRecord.getMinBufferSize(sample_rate, in_ch, enc))
                 if min_rec <= 0:
                     min_rec = frame_size_bytes * 4
-                _trace(f"create_audio: getMinBufferSize={min_rec}, about to construct AudioRecord")
-                recorder = AudioRecord(audio_source, sample_rate, in_ch, enc,
-                                       max(min_rec, frame_size_bytes * 4))
-                _trace("create_audio: AudioRecord constructed, getState()...")
+                rec_buf = max(min_rec, frame_size_bytes * 4)
+                _trace(f"create_audio: minBuffer={min_rec} recBuf={rec_buf}, constructing AudioRecord")
+                recorder = AudioRecord(audio_source, sample_rate, in_ch, enc, rec_buf)
                 state = int(recorder.getState())
-                _trace(f"create_audio: AudioRecord state={state} (1=initialized)")
+                _trace(f"create_audio: AudioRecord state={state} (1=INITIALIZED,0=uninit)")
                 if state != int(AudioRecord.STATE_INITIALIZED):
                     try:
                         recorder.release()
@@ -339,11 +388,21 @@ def patch_android_audio():
                 min_play = int(AudioTrack.getMinBufferSize(sample_rate, out_ch, enc))
                 if min_play <= 0:
                     min_play = frame_size_bytes * 4
-                _trace(f"create_audio: about to construct AudioTrack min_buf={min_play}")
+                play_buf = max(min_play, frame_size_bytes * 4)
+                _trace(f"create_audio: constructing AudioTrack stream=STREAM_MUSIC(3) minBuf={min_play} playBuf={play_buf}")
                 track = AudioTrack(AudioManager.STREAM_MUSIC, sample_rate, out_ch, enc,
-                                   max(min_play, frame_size_bytes * 4),
-                                   AudioTrack.MODE_STREAM)
-                _trace("create_audio: AudioTrack constructed")
+                                   play_buf, AudioTrack.MODE_STREAM)
+                tstate = int(track.getState())
+                _trace(f"create_audio: AudioTrack state={tstate} (1=INITIALIZED)")
+                if tstate != int(AudioTrack.STATE_INITIALIZED):
+                    try:
+                        track.release()
+                        recorder.release()
+                    except Exception:
+                        pass
+                    raise ab.AudioUnavailableError("扬声器初始化失败")
+            except ab.AudioUnavailableError:
+                raise
             except Exception as e:
                 try:
                     recorder.release()
