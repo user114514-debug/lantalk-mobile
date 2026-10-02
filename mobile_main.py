@@ -2457,26 +2457,111 @@ class MobileChatApp:
         except Exception as e:
             content = f"读取失败: {e}"
 
-        def _copy_all(e=None):
+        status_tip = ft.Text("", size=13, color="#34C759")
+
+        async def _copy_all(e=None):
             try:
                 self._btn_sound()
             except Exception:
                 pass
             try:
-                self.page.set_clipboard(content)
-                self._append_system(t("已复制到剪贴板"))
+                clip = getattr(self.page, "clipboard", None)
+                if clip is not None:
+                    await clip.set(content)
+                    status_tip.value = t("已复制到剪贴板")
+                else:
+                    status_tip.value = t("剪贴板不可用")
+                self.page.update()
+            except Exception as ex:
+                status_tip.value = f"{t('复制失败')}: {ex}"
+                self.page.update()
+
+        def _export_download(e=None):
+            """直接硬编码写 /storage/emulated/0/Download，不走 MediaStore。"""
+            try:
+                self._btn_sound()
             except Exception:
                 pass
+            fname = "LanTalk_" + filename
+            saved = ""
+            for d in ("/storage/emulated/0/Download", "/sdcard/Download"):
+                try:
+                    if os.path.isdir(d):
+                        p = os.path.join(d, fname)
+                        with open(p, "w", encoding="utf-8") as f:
+                            f.write(content)
+                        saved = p
+                        break
+                except Exception:
+                    continue
+            if saved:
+                status_tip.value = f"{t('已保存到')}: {saved}"
+            else:
+                status_tip.value = t("保存失败，请用复制功能")
+            self.page.update()
 
-        copy_btn = ft.Container(
+        def _share(e=None):
+            """系统分享 ACTION_SEND。"""
+            try:
+                self._btn_sound()
+            except Exception:
+                pass
+            if not _is_android():
+                status_tip.value = t("仅安卓支持分享")
+                self.page.update()
+                return
+            def worker():
+                try:
+                    from jnius import autoclass
+                    host = os.environ.get("MAIN_ACTIVITY_HOST_CLASS_NAME",
+                                         "com.flet.serious_python_android.PythonActivity")
+                    activity = autoclass(host).mActivity
+                    Intent = autoclass("android.content.Intent")
+                    JString = autoclass("java.lang.String")
+                    intent = Intent(Intent.ACTION_SEND)
+                    intent.setType("text/plain")
+                    intent.putExtra(Intent.EXTRA_SUBJECT, JString("LanTalk crash log"))
+                    intent.putExtra(Intent.EXTRA_TEXT, JString(content))
+                    chooser = Intent.createChooser(intent, JString(t("分享日志")))
+                    chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    activity.startActivity(chooser)
+                except Exception as ex:
+                    status_tip.value = f"{t('分享失败')}: {ex}"
+                    self.page.update()
+            threading.Thread(target=worker, daemon=True).start()
+
+        btn_row = ft.Container(
             content=ft.Row(controls=[
-                ft.Icon(ft.icons.CONTENT_COPY, size=18, color="#34C759"),
-                ft.Text(t("复制全部"), size=16, color="#34C759"),
-            ], spacing=6, alignment=ft.MainAxisAlignment.CENTER),
-            padding=ft.padding.symmetric(vertical=12),
+                ft.Container(
+                    content=ft.Row(controls=[
+                        ft.Icon(ft.icons.CONTENT_COPY, size=16, color="#34C759"),
+                        ft.Text(t("复制"), size=14, color="#34C759"),
+                    ], spacing=4, alignment=ft.MainAxisAlignment.CENTER),
+                    padding=ft.padding.symmetric(vertical=10), expand=True,
+                    on_click=_copy_all),
+                ft.Container(width=0.5, bgcolor=ft.Colors.with_opacity(0.12, ft.Colors.GREY_400), height=30),
+                ft.Container(
+                    content=ft.Row(controls=[
+                        ft.Icon(ft.icons.DOWNLOAD_OUTLINED, size=16, color="#34C759"),
+                        ft.Text(t("导出"), size=14, color="#34C759"),
+                    ], spacing=4, alignment=ft.MainAxisAlignment.CENTER),
+                    padding=ft.padding.symmetric(vertical=10), expand=True,
+                    on_click=_export_download),
+                ft.Container(width=0.5, bgcolor=ft.Colors.with_opacity(0.12, ft.Colors.GREY_400), height=30),
+                ft.Container(
+                    content=ft.Row(controls=[
+                        ft.Icon(ft.icons.SHARE_OUTLINED, size=16, color="#34C759"),
+                        ft.Text(t("分享"), size=14, color="#34C759"),
+                    ], spacing=4, alignment=ft.MainAxisAlignment.CENTER),
+                    padding=ft.padding.symmetric(vertical=10), expand=True,
+                    on_click=_share),
+            ], spacing=0),
             margin=ft.margin.symmetric(horizontal=16, vertical=8),
-            bgcolor=ft.Colors.WHITE, border_radius=12,
-            on_click=_copy_all)
+            bgcolor=ft.Colors.WHITE, border_radius=12)
+
+        tip_row = ft.Container(
+            content=status_tip, padding=ft.padding.symmetric(horizontal=20),
+            margin=ft.margin.only(bottom=4))
 
         content_view = ft.Container(
             content=ft.Text(content, size=12, color=ft.Colors.GREY_800, selectable=True,
@@ -2489,7 +2574,7 @@ class MobileChatApp:
             content=ft.Column(controls=[
                 self._settings_nav(filename, self.show_crash_logs),
                 ft.Container(expand=True, content=ft.Column(controls=[
-                    copy_btn, content_view, ft.Container(height=16),
+                    btn_row, tip_row, content_view, ft.Container(height=16),
                 ], scroll=ft.ScrollMode.AUTO)),
             ], spacing=0, expand=True),
             bgcolor="#F2F2F7", expand=True)
