@@ -178,8 +178,10 @@ echo           timeout_minutes: 5
 echo           max_attempts: 3
 echo           retry_on: error
 echo           command: ^|
+echo             export PATH="$HOME/.local/bin:$PATH"
 echo             python -m pip install --upgrade pip
 echo             pip install flet==0.86.5
+echo             flet --version
 echo.
 echo       - name: Pre-build self-check
 echo         run: ^|
@@ -195,8 +197,9 @@ echo           timeout_minutes: 40
 echo           max_attempts: 3
 echo           retry_on: error
 echo           command: ^|
+echo             export PATH="$HOME/.local/bin:$PATH"
 echo             rm -rf build/ .flet/
-echo             python -m flet build apk --module-name mobile_main --project "LanTalk" --org "com.lantalk" --product "lantalk" --build-number "%BNUM%" --build-version "%APP_VER%" --icon "assets/icon.png"
+echo             flet build apk --module-name mobile_main --project "LanTalk" --org "com.lantalk" --product "lantalk" --build-number "%BNUM%" --build-version "%APP_VER%" --icon "assets/icon.png"
 echo.
 echo       - name: Upload APK
 echo         uses: actions/upload-artifact@v4
