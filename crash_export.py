@@ -1,20 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-crash_export.py — LanTalk 移动端崩溃日志导出（新增独立模块）
+crash_export.py — LanTalk 移动端崩溃日志导出
 
-【解决的问题】
-崩溃日志存在应用私有目录 crash_logs/，荣耀 MagicOS 等封闭系统
-文件管理器看不到 Android/data 目录，用户无法手动导出。
-
-【本模块做什么】
-  1. 把 crash_logs/ 里所有日志复制到公共 Download/LanTalk_crash_logs/ 目录
-  2. 在 Android 上用 ACTION_SEND Intent 分享日志文件
-  3. 提供 Flet 按钮构建函数，供设置页调用
+Android 10+ 用 MediaStore.Downloads API 写入公共 Download 目录，
+不需要存储权限，文件管理器可直接看到。
 """
 
 import os
-import shutil
-import time
 from datetime import datetime
 
 
@@ -23,50 +15,55 @@ def _is_android():
     return "android" in sys.modules or hasattr(sys, "getandroidapilevel")
 
 
-def get_download_dir():
-    """获取可写的导出目录。"""
-    # 方式1：通过 Activity 获取公共 Download 目录（Android <10 或有旧存储权限时可用）
-    try:
-        from android_perms import get_activity
-        act = get_activity()
-        if act is not None:
-            from jnius import autoclass
-            Environment = autoclass("android.os.Environment")
-            dl = Environment.getExternalStoragePublicDirectory(
-                Environment.DIRECTORY_DOWNLOADS
-            ).getAbsolutePath()
-            # 测试是否可写
-            test_file = os.path.join(dl, ".lantalk_write_test")
-            try:
-                with open(test_file, "w") as f:
-                    f.write("test")
-                os.remove(test_file)
-                return dl
-            except Exception:
-                pass  # 不可写，继续试下一种
-    except Exception:
-        pass
+def _export_via_mediastore(log_files, log_dir):
+    """
+    Android 10+：用 MediaStore.Downloads 写入公共 Download 目录。
+    返回 (成功条数, 提示文字)。
+    """
+    from jnius import autoclass
+    from android_perms import get_activity
 
-    # 方式2：应用外部私有目录（Android 11+ 应用自己可写，无需权限）
-    # 路径：/storage/emulated/0/Android/data/com.lantalk/files/
-    try:
-        from android_perms import get_activity
-        act = get_activity()
-        if act is not None:
-            external = act.getExternalFilesDir(None)
-            if external is not None:
-                return external.getAbsolutePath()
-    except Exception:
-        pass
+    act = get_activity()
+    if act is None:
+        return 0, "无法获取 Activity"
 
-    # 方式3：应用私有 files 目录（保底，桌面端也能用）
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "exported_logs")
+    ContentValues = autoclass("android.content.ContentValues")
+    MediaStore = autoclass("android.provider.MediaStore")
+    ContentResolver = act.getContentResolver()
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    rel_path = f"Download/LanTalk_crash_logs_{timestamp}"
+
+    count = 0
+    for fname in sorted(log_files, reverse=True):
+        src = os.path.join(log_dir, fname)
+        try:
+            values = ContentValues()
+            values.put(MediaStore.Downloads.DISPLAY_NAME, fname)
+            values.put(MediaStore.Downloads.MIME_TYPE, "text/plain")
+            values.put(MediaStore.Downloads.RELATIVE_PATH, rel_path)
+
+            uri = ContentResolver.insert(
+                MediaStore.Downloads.EXTERNAL_CONTENT_URI, values
+            )
+            if uri is None:
+                continue
+
+            out_stream = ContentResolver.openOutputStream(uri)
+            with open(src, "rb") as f:
+                out_stream.write(f.read())
+            out_stream.close()
+            count += 1
+        except Exception:
+            continue
+
+    return count, f"Download/LanTalk_crash_logs_{timestamp}"
 
 
 def export_crash_logs(log_dir="crash_logs"):
     """
-    导出所有崩溃日志到公共下载目录。
-    返回 (成功条数, 目标目录, 错误信息)。
+    导出所有崩溃日志到公共 Download 目录。
+    返回 (成功条数, 目标位置, 错误信息)。
     """
     try:
         if not os.path.exists(log_dir):
@@ -79,23 +76,27 @@ def export_crash_logs(log_dir="crash_logs"):
         if not log_files:
             return 0, "", "没有崩溃日志"
 
-        # 目标目录：Download/LanTalk_crash_logs_时间戳/
-        dl = get_download_dir()
+        # Android：用 MediaStore API
+        if _is_android():
+            count, loc = _export_via_mediastore(log_files, log_dir)
+            if count > 0:
+                return count, loc, ""
+            return 0, "", "MediaStore 写入失败"
+
+        # 桌面端：导出到 ~/Downloads/LanTalk_crash_logs_时间戳/
+        dl = os.path.join(os.path.expanduser("~"), "Downloads")
         target_dir = os.path.join(
             dl, f"LanTalk_crash_logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         )
         os.makedirs(target_dir, exist_ok=True)
-
+        import shutil
         count = 0
         for fname in sorted(log_files, reverse=True):
-            src = os.path.join(log_dir, fname)
-            dst = os.path.join(target_dir, fname)
             try:
-                shutil.copy2(src, dst)
+                shutil.copy2(os.path.join(log_dir, fname), os.path.join(target_dir, fname))
                 count += 1
             except Exception:
                 pass
-
         return count, target_dir, ""
 
     except Exception as e:
@@ -114,10 +115,8 @@ def share_log_file(filepath):
             return False
 
         Intent = autoclass("android.content.Intent")
-        Uri = autoclass("android.net.Uri")
         FileProvider = autoclass("androidx.core.content.FileProvider")
 
-        # 用 FileProvider 获取 content URI
         file = autoclass("java.io.File")(filepath)
         uri = FileProvider.getUriForFile(
             act,
@@ -136,10 +135,7 @@ def share_log_file(filepath):
 
 
 def build_export_button(app):
-    """
-    构建【导出崩溃日志】Flet 按钮，点击后导出日志并提示结果。
-    在设置对话框构建后调用，把按钮插入设置列表。
-    """
+    """构建【导出崩溃日志】按钮。"""
     import flet as ft
 
     def _on_export(ev):
@@ -153,7 +149,6 @@ def build_export_button(app):
                 msg = f"已导出 {count} 个崩溃日志到:\n{target_dir}"
             else:
                 msg = f"导出失败: {err}"
-            # 显示结果
             try:
                 app._append_system(msg)
             except Exception:
