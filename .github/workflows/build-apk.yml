@@ -47,7 +47,7 @@ jobs:
 
       - name: Build APK with icon
         run: |
-          flet build apk --module-name mobile_main --project "LanTalk" --org "com.lantalk" --product "lantalk" --build-number "20261003" --build-version "4.0.0" --icon "assets/icon.png"
+          flet build apk --module-name mobile_main --project "LanTalk" --org "com.lantalk" --product "lantalk" --build-number "" --build-version "" --icon "assets/icon.png"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4

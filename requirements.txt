@@ -1,0 +1,6 @@
+cryptography
+pyjnius
+psutil
+# �������ר�ã������ APK����׿��ԭ�� MediaRecorder/pyjnius����
+sounddevice
+numpy
