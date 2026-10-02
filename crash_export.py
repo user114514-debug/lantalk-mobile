@@ -24,21 +24,43 @@ def _is_android():
 
 
 def get_download_dir():
-    """获取公共下载目录路径。"""
+    """获取可写的导出目录。"""
+    # 方式1：通过 Activity 获取公共 Download 目录（Android <10 或有旧存储权限时可用）
     try:
         from android_perms import get_activity
         act = get_activity()
         if act is not None:
-            # Environment.getExternalStoragePublicDirectory(DIRECTORY_DOWNLOADS)
             from jnius import autoclass
             Environment = autoclass("android.os.Environment")
-            return Environment.getExternalStoragePublicDirectory(
+            dl = Environment.getExternalStoragePublicDirectory(
                 Environment.DIRECTORY_DOWNLOADS
             ).getAbsolutePath()
+            # 测试是否可写
+            test_file = os.path.join(dl, ".lantalk_write_test")
+            try:
+                with open(test_file, "w") as f:
+                    f.write("test")
+                os.remove(test_file)
+                return dl
+            except Exception:
+                pass  # 不可写，继续试下一种
     except Exception:
         pass
-    # 回退：Downloads 目录
-    return os.path.join(os.path.expanduser("~"), "Downloads")
+
+    # 方式2：应用外部私有目录（Android 11+ 应用自己可写，无需权限）
+    # 路径：/storage/emulated/0/Android/data/com.lantalk/files/
+    try:
+        from android_perms import get_activity
+        act = get_activity()
+        if act is not None:
+            external = act.getExternalFilesDir(None)
+            if external is not None:
+                return external.getAbsolutePath()
+    except Exception:
+        pass
+
+    # 方式3：应用私有 files 目录（保底，桌面端也能用）
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "exported_logs")
 
 
 def export_crash_logs(log_dir="crash_logs"):
