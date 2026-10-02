@@ -204,17 +204,23 @@ class CryptoSessionManager:
                 if not isinstance(text, str):
                     return original_on_message(payload)
 
-                is_key = text.startswith(KEY_PREFIX)
-                is_enc = text.startswith(ENC_PREFIX)
+                # 公共频道格式 "username: content"：sender 为空时剥出用户名和实际内容
+                sig_text = text
+                if not sender and ": " in text:
+                    _s, _c = text.split(": ", 1)
+                    sender, sig_text = _s, _c
+
+                is_key = sig_text.startswith(KEY_PREFIX)
+                is_enc = sig_text.startswith(ENC_PREFIX)
 
                 if is_key or is_enc:
                     if self.username and sender == self.username:
                         return  # 忽略自己信令回声
                     if is_key:
-                        self._handle_peer_key(sender, text[len(KEY_PREFIX):])
+                        self._handle_peer_key(sender, sig_text[len(KEY_PREFIX):])
                         return
                     try:
-                        plain = self.decrypt_text(sender, text[len(ENC_PREFIX):])
+                        plain = self.decrypt_text(sender, sig_text[len(ENC_PREFIX):])
                     except TamperError as e:
                         self._emit_alert(sender, "TamperError", str(e))
                         return
@@ -225,7 +231,8 @@ class CryptoSessionManager:
                         self._emit_alert(sender, "DecryptError", str(e))
                         return
                     new_payload = dict(payload)
-                    new_payload["text"] = plain
+                    # 公共格式需保留 "sender: " 前缀，私聊直接放明文
+                    new_payload["text"] = (sender + ": " + plain) if (not payload.get("sender") and ": " in text) else plain
                     new_payload["encrypted"] = True
                     return original_on_message(new_payload)
 

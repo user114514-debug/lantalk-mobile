@@ -1326,6 +1326,31 @@ class MobileChatApp:
             return
         self._ui(self._handle_message(payload))
 
+    def _intercept_crypto_signal(self, text, peer):
+        """显示前兜底：LT1:KEY/ENC 信令绝不进 UI。
+        返回 (拦截=True, 解密明文或None)；普通消息返回 (False, None)。"""
+        if not isinstance(text, str):
+            return False, None
+        KEY, ENC = "LT1:KEY:", "LT1:ENC:"
+        if not (text.startswith(KEY) or text.startswith(ENC)):
+            return False, None
+        mgr = getattr(self, "_crypto_mgr", None)
+        if text.startswith(KEY):
+            if mgr is not None and peer:
+                try:
+                    mgr._handle_peer_key(peer, text[len(KEY):])
+                except Exception as e:
+                    self._log(f"fallback handle_key failed: {e}")
+            return True, None
+        # ENC：尝试解密显示明文，失败则吞掉
+        if mgr is not None and peer:
+            try:
+                plain = mgr.decrypt_text(peer, text[len(ENC):])
+                return True, plain
+            except Exception as e:
+                self._log(f"fallback decrypt failed: {e}")
+        return True, None
+
     async def _handle_message(self, payload):
         try:
             if payload.get("msg_type") == "private":
@@ -1345,6 +1370,19 @@ class MobileChatApp:
                 if voice_sig:
                     sig_type, sig_caller, sig_callee, sig_extra = voice_sig
                     await self._handle_voice_signal(sig_type, sig_caller, sig_callee, sig_extra, is_self)
+                    return
+                # 兜底：拦截 LT1 加密信令（防止 wrap 漏网）
+                _peer = target if is_self else sender
+                _blocked, _plain = self._intercept_crypto_signal(text, _peer)
+                if _blocked:
+                    if _plain is not None and not is_self:
+                        self.conversations[conv_id].append(
+                            ChatMessage(text=_plain, is_self=is_self, sender=sender))
+                        if conv_id != self.current_conv:
+                            self._unread[conv_id] = self._unread.get(conv_id, 0) + 1
+                            self._refresh_friend_chips()
+                        else:
+                            self._refresh_messages(conv_id)
                     return
                 # 自己发的私聊消息已在 send_message 中本地添加，跳过服务器回传避免重复
                 if not is_self:
@@ -1373,6 +1411,15 @@ class MobileChatApp:
                 if voice_sig:
                     sig_type, sig_caller, sig_callee, sig_extra = voice_sig
                     await self._handle_voice_signal(sig_type, sig_caller, sig_callee, sig_extra, is_self)
+                    return
+                # 兜底：拦截 LT1 加密信令（公共频道 "sender: LT1:..." 格式 wrap 可能漏判）
+                _blocked, _plain = self._intercept_crypto_signal(actual_text, sender)
+                if _blocked:
+                    if _plain is not None and not is_self:
+                        self.conversations.setdefault("public", []).append(
+                            ChatMessage(text=_plain, is_self=is_self, sender=sender))
+                        if self.current_conv == "public":
+                            self._refresh_messages("public")
                     return
                 # 自己发的公共消息已经在 send_message 中本地添加了，跳过避免重复
                 if not is_self:
