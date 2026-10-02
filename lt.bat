@@ -199,7 +199,7 @@ echo           retry_on: error
 echo           command: ^|
 echo             export PATH="$HOME/.local/bin:$PATH"
 echo             rm -rf build/ .flet/
-echo             flet build apk --module-name mobile_main --project "LanTalk" --org "com.lantalk" --product "lantalk" --build-number "%BNUM%" --build-version "%APP_VER%" --icon "assets/icon.png"
+echo             flet build apk --module-name mobile_main --project "LanTalk" --org "com.lantalk" --product "lantalk" --build-number "%BNUM%" --build-version "%APP_VER%"
 echo.
 echo       - name: Upload APK
 echo         uses: actions/upload-artifact@v4
