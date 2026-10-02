@@ -1,0 +1,67 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Java JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.8'
+          channel: 'stable'
+
+      - name: Accept Android licenses
+        run: |
+          yes | flutter doctor --android-licenses
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Flet CLI (retry on network flake)
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 5
+          max_attempts: 3
+          retry_on: error
+          command: |
+            python -m pip install --upgrade pip
+            pip install flet==0.86.5
+
+      - name: Pre-build self-check
+        run: |
+          python -m py_compile mobile_main.py
+          test -f assets/icon.png
+          test -f assets/fonts/Twemoji.ttf
+          test -d assets/flags
+
+      - name: Build APK with icon (retry + clean cache on failure)
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 40
+          max_attempts: 3
+          retry_on: error
+          command: |
+            rm -rf build/ .flet/
+            python -m flet build apk --module-name mobile_main --project "LanTalk" --org "com.lantalk" --product "lantalk" --build-number "20261003" --build-version "4.0.0" --icon "assets/icon.png"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: lantalk-apk
+          path: build/flutter/build/app/outputs/flutter-apk/app-release.apk

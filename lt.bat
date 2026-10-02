@@ -171,7 +171,7 @@ echo         uses: actions/setup-python@v5
 echo         with:
 echo           python-version: '3.12'
 echo.
-echo       - name: Install Flet CLI (retry on network flake)
+echo       - name: Install Flet CLI ^(retry on network flake^)
 echo         uses: nick-fields/retry@v3
 echo         with:
 echo           timeout_minutes: 5
@@ -188,7 +188,7 @@ echo           test -f assets/icon.png
 echo           test -f assets/fonts/Twemoji.ttf
 echo           test -d assets/flags
 echo.
-echo       - name: Build APK with icon (retry + clean cache on failure)
+echo       - name: Build APK with icon ^(retry + clean cache on failure^)
 echo         uses: nick-fields/retry@v3
 echo         with:
 echo           timeout_minutes: 40
