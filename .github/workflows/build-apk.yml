@@ -38,11 +38,35 @@ jobs:
           python -m pip install --upgrade pip
           pip install "flet==0.86.5" "flet-audio>=0.86.0" "cryptography>=42.0.0" "pyjnius>=1.6.1" "psutil>=5.9.0"
 
+      - name: Patch MainActivity to FlutterFragmentActivity
+        run: |
+          # flet 默认 MainActivity 继承 FlutterActivity（无 AndroidX ActivityResultRegistry），
+          # 改成 FlutterFragmentActivity 以获得完整 AndroidX 支持（文件选择/拍照/生物识别）。
+          # 递归定位 site-packages 内的模板，不依赖 flet 内部目录结构。
+          PATCH_DONE=0
+          ROOTS=$(python -c "import site; ps=site.getsitepackages()+[site.getusersitepackages()]; print(' '.join(ps))")
+          for root in $ROOTS; do
+            [ -d "$root" ] || continue
+            while IFS= read -r f; do
+              echo "=== Found Flutter template: $f ==="
+              sed -i \
+                -e 's#io\.flutter\.embedding\.android\.FlutterActivity#io.flutter.embedding.android.FlutterFragmentActivity#g' \
+                -e 's#FlutterActivity()#FlutterFragmentActivity()#g' \
+                "$f"
+              echo "--- after patch ---"
+              grep -n "Flutter" "$f" || true
+              PATCH_DONE=1
+            done < <(grep -rl "embedding.android.FlutterActivity" "$root" 2>/dev/null)
+          done
+          if [ "$PATCH_DONE" -eq 0 ]; then
+            echo "::warning::No FlutterActivity template found - check flet packaging"
+          fi
+
       - name: Build APK (auto-retry on network failure)
         run: |
           for i in 1 2 3; do
             echo "===== Build attempt $i/3 ====="
-            if flet build apk --module-name mobile_main --project "LanTalk" --org "com.lantalk" --product "lantalk" --build-number "6" --build-version "3.7.4" --arch arm64-v8a; then
+            if flet build apk --module-name mobile_main --project "LanTalk" --org "com.lantalk" --product "lantalk" --build-number "7" --build-version "3.7.4" --arch arm64-v8a; then
               echo "===== Build succeeded on attempt $i ====="
               break
             fi

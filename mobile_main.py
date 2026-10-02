@@ -461,7 +461,7 @@ class MobileChatApp:
             self._apply_theme_mode(self._theme_mode)
         except Exception:
             pass
-        # 文件选择：FilePicker 同时挂 overlay + services，确保安卓上能弹窗
+        # 文件选择：FilePicker 只挂 services（挂 overlay 会报 Unknown control）
         self._file_picker = None
         self._file_picker_ok = False
         if _is_android():
@@ -472,19 +472,12 @@ class MobileChatApp:
                     self._file_picker.on_result = self._on_file_picked
                 except Exception as _ev:
                     _trace_event(f"FilePicker bind on_result FAILED: {_ev!r}")
-                # 关键：FilePicker 必须挂 overlay，挂 services 在安卓上不弹窗
-                try:
-                    if hasattr(page, "overlay"):
-                        page.overlay.append(self._file_picker)
-                        _trace_event("FilePicker mounted to overlay")
-                except Exception as e_ov:
-                    _trace_event(f"overlay mount failed: {e_ov!r}")
                 try:
                     if hasattr(page, "services"):
                         page.services.append(self._file_picker)
-                        _trace_event("FilePicker mounted to services too")
-                except Exception:
-                    pass
+                        _trace_event("FilePicker mounted to services")
+                except Exception as e_sv:
+                    _trace_event(f"services mount failed: {e_sv!r}")
                 try:
                     page.update()
                 except Exception:
@@ -1607,7 +1600,7 @@ class MobileChatApp:
             return uri_str
 
     def _pick_file_with_fallback(self, path_display, send_btn, dlg):
-        """选择文件：直接用 Flet FilePicker，确保挂 overlay。"""
+        """选择文件：用 Flet FilePicker（挂 services）。"""
         self._pending_file_dialog = dlg
         self._pending_path_display = path_display
         self._pending_send_btn = send_btn
@@ -1617,25 +1610,18 @@ class MobileChatApp:
             return
         try:
             _trace_event("FilePicker.pick_files invoking")
-            # 确保 FilePicker 在 overlay 里
-            try:
-                if hasattr(self.page, "overlay") and self._file_picker not in list(self.page.overlay):
-                    self.page.overlay.append(self._file_picker)
-                    _trace_event("FilePicker re-appended to overlay")
-            except Exception:
-                pass
             try:
                 if hasattr(self.page, "services") and self._file_picker not in list(self.page.services):
                     self.page.services.append(self._file_picker)
+                    self.page.update()
             except Exception:
                 pass
-            self.page.update()
             self._file_picker.pick_files(dialog_title=t("选择要发送的文件"), allow_multiple=False)
             _trace_event("FilePicker.pick_files returned (picker launched)")
         except Exception as ex:
             _trace_event(f"FilePicker.pick_files EXC: {ex!r}")
             self._log(f"FilePicker failed: {ex}")
-            # 最后兜底：tkinter（仅桌面端有用，安卓上会静默失败）
+            # 桌面端兜底：tkinter（安卓上会静默失败）
             def _tk_worker():
                 try:
                     import tkinter as tk
