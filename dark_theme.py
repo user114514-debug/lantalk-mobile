@@ -305,8 +305,9 @@ def is_system_dark():
                     ["reg", "query",
                      r"HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
                      "/v", "AppsUseLightTheme"],
-                    capture_output=True, timeout=2)
-                out = result.stdout.decode("gbk", errors="replace")
+                    capture_output=True, timeout=2,
+                    encoding="gbk", errors="replace")
+                out = result.stdout or ""
                 return "0x0" in out
             except Exception:
                 return False

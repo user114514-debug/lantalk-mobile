@@ -77,11 +77,13 @@ def get_all_ipv6():
         import subprocess
         import re
         if sys.platform == "win32":
-            result = subprocess.run(["ipconfig"], capture_output=True, timeout=5)
-            output = result.stdout.decode("gbk", errors="replace")
+            result = subprocess.run(["ipconfig"], capture_output=True, timeout=5,
+                                    encoding="gbk", errors="replace")
+            output = result.stdout or ""
         else:
-            result = subprocess.run(["ip", "-6", "addr"], capture_output=True, timeout=5)
-            output = result.stdout.decode("utf-8", errors="replace")
+            result = subprocess.run(["ip", "-6", "addr"], capture_output=True, timeout=5,
+                                    encoding="utf-8", errors="replace")
+            output = result.stdout or ""
         # 匹配IPv6地址
         ipv6_pattern = r'([0-9a-fA-F:]+:+[0-9a-fA-F:]+)'
         matches = re.findall(ipv6_pattern, output)
