@@ -7,3 +7,15 @@ build/
 venv/
 .flet/
 crash_logs/
+theme_config.json
+test_*.py
+_emoji_*.py
+_debug_*.py
+_*_test.py
+_theme_*.py
+_bubble_*.py
+generate_flag_png.py
+err_*.txt
+out_*.txt
+*_trace.txt
+voice_tmp/

@@ -1,14 +1,18 @@
 [project]
 name = "lantalk"
-version = "3.7.2"
+version = "4.0.0"
 description = "LanTalk mobile client"
 # Flet 0.86 起，音频控件 ft.Audio 对应的 Flutter 插件 flet_audio
 # 必须在 dependencies 中声明，构建 APK 时才会被打包（旧的 --include-packages 参数已移除）
+# 注意：flet build apk 以本列表为准决定哪些 Python 包进 APK，
+# 缺 cryptography 会导致启动时 crypto 模块 import 失败直接崩溃。
 dependencies = [
     "flet==0.86.5",
     "flet-audio>=0.86.0",
+    "flet-android-notifications>=0.11.0",
+    "cryptography>=42.0.0",
     "pyjnius>=1.6.1",
-    "psutil>=5.9.0",
+    "psutil>=7.0.0",
 ]
 
 [tool.flet.organization]

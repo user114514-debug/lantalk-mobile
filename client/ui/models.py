@@ -30,6 +30,8 @@ class FileMessage:
     timestamp: datetime = field(default_factory=datetime.now)
     download_path: str = ""         # 下载保存路径（接收方下载后填充）
     status: str = "pending"         # pending/downloading/completed/failed
+    is_voice: bool = False          # 是否为语音消息
+    duration: float = 0.0           # 语音时长（秒）
 
 
 @dataclass

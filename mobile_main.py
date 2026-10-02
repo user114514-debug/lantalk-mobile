@@ -20,6 +20,7 @@
 # ============================================================
 import asyncio
 import json
+import math
 import os
 import sys
 import time
@@ -106,6 +107,7 @@ from client.config import load_server_config, save_server_config, load_ip_mode, 
 from utils.network import get_local_ipv4, get_local_ipv6, get_all_ipv6
 from utils.emoji_flags import has_flag, iter_segments, tokenize_text
 from client.ui.models import ChatMessage, FileMessage
+import android_voice_message as vmsg
 from client.ui.file_transfer import FileTransferClient
 from client.ui.voice_udp import (
     VoiceCall, parse_voice_signal,
@@ -1023,16 +1025,18 @@ class MobileChatApp:
                                  width=38, height=38, border_radius=19, alignment=ft.alignment.center,
                                  animate_scale=ft.Animation(150, ft.AnimationCurve.EASE_OUT))
         file_btn.on_click = _tap_scale(file_btn, self._pick_file)
-        voice_btn = ft.Container(content=ft.Icon(ft.icons.MIC, size=22, color="#34C759"),
-                                  width=38, height=38, border_radius=19, alignment=ft.alignment.center,
-                                  animate_scale=ft.Animation(150, ft.AnimationCurve.EASE_OUT))
-        voice_btn.on_click = _tap_scale(voice_btn, self._start_voice)
+        self._mic_btn_inner = ft.Container(
+            content=ft.Icon(ft.icons.MIC, size=22, color="#34C759"),
+            width=38, height=38, border_radius=19, alignment=ft.alignment.center,
+            animate_scale=ft.Animation(150, ft.AnimationCurve.EASE_OUT))
+        self._recording_path = None
+        self._mic_btn_inner.on_click = _tap_scale(self._mic_btn_inner, self._mic_toggle)
         send_btn = ft.Container(content=ft.Icon(ft.icons.SEND, size=20, color=ft.Colors.WHITE),
                                  width=40, height=40, border_radius=20, alignment=ft.alignment.center,
                                  gradient=_ios_gradient,
                                  animate_scale=ft.Animation(150, ft.AnimationCurve.EASE_OUT))
         send_btn.on_click = _tap_scale(send_btn, lambda e: self._ui(self.send_message(self._input_field.value or "")))
-        self._normal_input = ft.Row(controls=[self._input_field, file_btn, voice_btn, send_btn], spacing=6,
+        self._normal_input = ft.Row(controls=[self._input_field, file_btn, self._mic_btn_inner, send_btn], spacing=6,
                                      vertical_alignment=ft.CrossAxisAlignment.CENTER)
         input_card = ft.Container(
             content=self._normal_input,
@@ -1052,12 +1056,16 @@ class MobileChatApp:
         # - 抽屉用 Positioned 限定全高、宽280，靠 content 自身 offset 滑入/滑出
         # - 把手是非定位控件(22x50)，由 Stack.alignment 钉在左缘垂直居中，
         #   不产生全高命中区；打开时平移到抽屉右缘作为“收起”箭头
+        self._build_rec_panel()
+        self._build_file_drawer()
         self._chat_root = ft.Stack(
             controls=[
                 chat_body,
                 ft.Positioned(left=0, top=0, right=0, bottom=0, content=self._drawer_mask),
                 ft.Positioned(left=0, top=0, bottom=0, width=280, content=drawer_content),
                 self._drawer_handle,
+                self._rec_panel,
+                self._file_drawer,
             ],
             alignment=ft.Alignment(-1, 0),
             expand=True)
@@ -1143,7 +1151,10 @@ class MobileChatApp:
         for i, m in enumerate(msgs):
             is_last = (i == len(msgs) - 1)
             if isinstance(m, FileMessage):
-                controls.append(self._build_file_bubble(m))
+                if getattr(m, "is_voice", False):
+                    controls.append(self._build_voice_bubble(m))
+                else:
+                    controls.append(self._build_file_bubble(m))
             elif getattr(m, "is_voice_invite", False):
                 controls.append(self._build_voice_invite(m))
             elif m.is_system:
@@ -1269,6 +1280,46 @@ class MobileChatApp:
             ] + ([ft.ProgressBar(value=progress/100, width=200)] if m.status in ("uploading","downloading") and progress > 0 else []),
             spacing=2),
             bgcolor=ft.Colors.GREEN_50, border_radius=10, padding=ft.padding.all(10),
+        )
+        return ft.Row(controls=[bubble, ft.Container(expand=True)] if m.is_self else [ft.Container(expand=True), bubble],
+                      alignment=ft.MainAxisAlignment.END if m.is_self else ft.MainAxisAlignment.START)
+
+    def _build_voice_bubble(self, m):
+        """语音消息气泡：喇叭图标 + 时长，点击播放。"""
+        dur = int(round(getattr(m, "duration", 0) or 0))
+        if m.status == "uploading":
+            inner = ft.Row(controls=[
+                ft.Icon(ft.icons.MIC, size=22, color=ft.Colors.WHITE),
+                ft.Text(t("发送中..."), size=15, color=ft.Colors.WHITE),
+            ], spacing=8, alignment=ft.MainAxisAlignment.CENTER)
+        elif m.status == "downloading":
+            inner = ft.Row(controls=[
+                ft.Icon(ft.icons.DOWNLOAD_FOR_OFFLINE, size=22, color=ft.Colors.GREEN_700),
+                ft.Text(t("下载中..."), size=15, color=ft.Colors.GREY_600),
+            ], spacing=8, alignment=ft.MainAxisAlignment.CENTER)
+        elif m.status == "failed":
+            inner = ft.Row(controls=[
+                ft.Icon(ft.icons.ERROR_OUTLINE, size=22, color=ft.Colors.RED_400),
+                ft.Text(t("失败"), size=15, color=ft.Colors.GREY_600),
+            ], spacing=8, alignment=ft.MainAxisAlignment.CENTER)
+        else:
+            # 可播放
+            icon_color = ft.Colors.WHITE if m.is_self else "#34C759"
+            dur_text = f"{dur}\"" if dur > 0 else "▶"
+            inner = ft.Row(controls=[
+                ft.Icon(ft.icons.PLAY_ARROW_ROUNDED if not m.is_self else ft.icons.PLAY_ARROW_ROUNDED,
+                        size=24, color=icon_color),
+                ft.Text(dur_text, size=15, color=icon_color, weight=ft.FontWeight.W_500),
+            ], spacing=6, alignment=ft.MainAxisAlignment.CENTER)
+        bubble = ft.Container(
+            content=ft.Container(content=inner, padding=ft.padding.symmetric(horizontal=16, vertical=12)),
+            border_radius=ft.BorderRadius(top_left=18, top_right=18, bottom_left=18, bottom_right=6)
+            if m.is_self else ft.BorderRadius(top_left=18, top_right=18, bottom_left=6, bottom_right=18),
+            gradient=ft.LinearGradient(begin=ft.alignment.center_left, end=ft.alignment.center_right,
+                                       colors=["#34C759", "#30D158"]) if m.is_self else None,
+            bgcolor=None if m.is_self else ft.Colors.with_opacity(0.9, ft.Colors.WHITE),
+            on_click=lambda e: self._play_voice_message(m) if m.status == "completed" else None,
+            ink=True,
         )
         return ft.Row(controls=[bubble, ft.Container(expand=True)] if m.is_self else [ft.Container(expand=True), bubble],
                       alignment=ft.MainAxisAlignment.END if m.is_self else ft.MainAxisAlignment.START)
@@ -1598,7 +1649,7 @@ class MobileChatApp:
 
     def _pick_file(self, e):
         self._btn_sound()
-        self._show_file_send_dialog()
+        self._ui(self._open_file_drawer())
 
     def _resolve_android_content_uri(self, uri_str):
         """Android content URI 复制到临时文件，返回文件系统路径；非 content URI 直接返回原路径。"""
@@ -1793,7 +1844,7 @@ class MobileChatApp:
         self._close_dialog_with_fade(dlg)
         self._ui(self.send_file(filepath))
 
-    async def send_file(self, filepath):
+    async def send_file(self, filepath, is_voice=False, duration=0.0):
         if not self.file_transfer or self.file_transfer.is_busy():
             self._append_system(t("已有文件正在传输，请稍候"))
             return
@@ -1806,7 +1857,9 @@ class MobileChatApp:
         is_private = self.current_conv.startswith("friend:")
         target_user = self.current_conv[7:] if is_private else ""
         fm = FileMessage(filename=filename, file_size=file_size, is_self=True,
-                         sender=self.client.username or "", status="uploading")
+                         sender=self.client.username or "", status="uploading",
+                         is_voice=is_voice, duration=duration)
+        fm._local_path = filepath
         self.conversations.setdefault(self.current_conv, []).append(fm)
         self._refresh_messages(self.current_conv)
 
@@ -1839,7 +1892,9 @@ class MobileChatApp:
     async def _handle_incoming_file(self, file_id, filename, sender, conv_id):
         if not self.file_transfer:
             return
-        fm = FileMessage(filename=filename, file_id=file_id, is_self=False, sender=sender, status="downloading")
+        voice_like = self._is_voice_filename(filename)
+        fm = FileMessage(filename=filename, file_id=file_id, is_self=False, sender=sender,
+                         status="downloading", is_voice=voice_like)
         self.conversations.setdefault(conv_id, []).append(fm)
         self._refresh_messages(conv_id)
         save_dir = self._save_dir
@@ -1858,12 +1913,647 @@ class MobileChatApp:
             if ok:
                 fm.status = "completed"
                 fm.download_path = filepath
-                try: fm.file_size = os.path.getsize(filepath)
-                except Exception: pass
+                try:
+                    fm.file_size = os.path.getsize(filepath)
+                except Exception:
+                    pass
+                # 接收方无时长元数据，按文件大小估算（AAC 约 2KB/s）
+                if fm.is_voice and fm.duration <= 0:
+                    fm.duration = max(1.0, fm.file_size / 2000.0)
             else:
                 fm.status = "failed"
             self._refresh_messages(conv_id)
         threading.Thread(target=worker, daemon=True).start()
+
+    @staticmethod
+    def _is_voice_filename(fn):
+        fn = (fn or "").lower()
+        return fn.startswith("voice_") and (fn.endswith(".m4a") or fn.endswith(".wav"))
+
+    # ---------- 按住说话（语音消息） ----------
+    def _mic_btn_normal(self):
+        try:
+            self._mic_btn_inner.bgcolor = None
+            self._mic_btn_inner.content = ft.Icon(ft.icons.MIC, size=22, color="#34C759")
+            self._mic_btn_inner.update()
+        except Exception:
+            pass
+
+    def _build_rec_panel(self):
+        """按住/点开麦克风后从底部升起的录音抽屉（参考用户草图）。
+        - 待命态：时间 --:--，声纹静止
+        - 按住大绿色麦克风才开始录，松开发送
+        - 左上红圆白 X / 右侧取消：关闭抽屉
+        """
+        green_grad = ft.LinearGradient(
+            begin=ft.alignment.center_left, end=ft.alignment.center_right,
+            colors=["#34C759", "#30D158"])
+
+        # 声纹波形条（待命时静止矮条）
+        self._rec_bars = []
+        bar_row = ft.Row(alignment=ft.MainAxisAlignment.CENTER, spacing=3)
+        nbar = 23
+        for i in range(nbar):
+            b = ft.Container(width=3, height=6, border_radius=2, bgcolor="#34C759")
+            self._rec_bars.append(b)
+            bar_row.controls.append(b)
+
+        # 录制时间（待命 --:--）/ 状态
+        self._rec_time = ft.Text("--:--", size=36, weight=ft.FontWeight.W_700,
+                                 color=ft.Colors.GREY_900)
+        self._rec_status = ft.Text(t("按住麦克风开始说话"), size=14,
+                                   color=ft.Colors.GREY_500)
+
+        # 大绿色圆形麦克风按钮：按住开始录，松开发送
+        big_mic = ft.Container(
+            content=ft.Icon(ft.icons.MIC, size=40, color=ft.Colors.WHITE),
+            width=84, height=84, border_radius=42, alignment=ft.alignment.center,
+            gradient=green_grad,
+            animate_scale=ft.Animation(150, ft.AnimationCurve.EASE_OUT))
+        self._rec_big_mic = ft.GestureDetector(
+            content=big_mic,
+            on_pan_start=lambda e: self._rec_big_press(e),
+            on_pan_update=lambda e: self._rec_big_move(e),
+            on_pan_end=lambda e: self._rec_big_release(e),
+            on_pan_cancel=lambda e: self._rec_big_cancel())
+
+        # 取消发送按钮（大麦克风右侧）：录音时才显示；上滑到取消区时变红
+        self._rec_cancel_icon = ft.Icon(ft.icons.DELETE_OUTLINE, size=26,
+                                        color=ft.Colors.GREY_600)
+        self._rec_cancel_text = ft.Text(t("取消"), size=12,
+                                        color=ft.Colors.GREY_600)
+        cancel_inner = ft.Column(controls=[
+            self._rec_cancel_icon, self._rec_cancel_text,
+        ], alignment=ft.MainAxisAlignment.CENTER,
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=2)
+        self._rec_cancel_btn = ft.Container(
+            content=cancel_inner, width=64, height=64, border_radius=32,
+            alignment=ft.alignment.center,
+            bgcolor=ft.Colors.with_opacity(0.12, ft.Colors.GREY_500),
+            visible=False,
+            animate_scale=ft.Animation(150, ft.AnimationCurve.EASE_OUT))
+        self._rec_cancel_btn.on_click = lambda e: self._close_rec_panel()
+
+        buttons = ft.Stack(height=100, controls=[
+            ft.Container(alignment=ft.alignment.center, content=self._rec_big_mic),
+            ft.Positioned(right=34, top=18, content=self._rec_cancel_btn),
+        ])
+
+        # 左上角红圆白 X 关闭按钮
+        close_x = ft.Container(
+            content=ft.Icon(ft.icons.CLOSE, size=18, color=ft.Colors.WHITE),
+            width=30, height=30, border_radius=15, alignment=ft.alignment.center,
+            bgcolor=ft.Colors.RED_400,
+            animate_scale=ft.Animation(150, ft.AnimationCurve.EASE_OUT))
+        close_x.on_click = lambda e: self._close_rec_panel()
+        top_row = ft.Row(controls=[close_x, ft.Container(expand=True)],
+                         spacing=0)
+
+        panel = ft.Container(
+            height=318,
+            bgcolor=ft.Colors.WHITE,
+            border_radius=ft.BorderRadius(top_left=22, top_right=22,
+                                         bottom_left=0, bottom_right=0),
+            border=ft.Border(
+                top=ft.BorderSide(1, ft.Colors.GREY_300),
+                right=ft.BorderSide(0, ft.Colors.TRANSPARENT),
+                bottom=ft.BorderSide(0, ft.Colors.TRANSPARENT),
+                left=ft.BorderSide(0, ft.Colors.TRANSPARENT)),
+            content=ft.Column(controls=[
+                top_row,
+                ft.Container(height=6),
+                ft.Container(alignment=ft.alignment.center, content=self._rec_time),
+                ft.Container(height=8),
+                bar_row,
+                ft.Container(alignment=ft.alignment.center,
+                             content=self._rec_status, height=24),
+                buttons,
+                ft.Container(height=8),
+            ], horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+            # 初始藏在屏幕外下方，打开时滑入
+            offset=ft.transform.Offset(0, 1),
+            animate_offset=ft.Animation(280, ft.AnimationCurve.EASE_OUT_CUBIC),
+        )
+        self._rec_sheet = panel
+        # 高度放在 Container 自身（compat 的 Positioned 工厂会忽略 height 参数）
+        self._rec_panel = ft.Positioned(left=0, right=0, bottom=0, content=panel)
+        self._rec_panel.visible = False
+        self._rec_sheet.visible = False
+        self._rec_tick_running = False
+        self._rec_panel_open = False
+        self._cancel_mode = False
+        self._press_start_y = None
+
+    # ========== 文件选择底部抽屉 ==========
+    _FILE_DRAWER_H = 470
+
+    def _build_file_drawer(self):
+        """点回形针滑入：顶部相册/文件入口 + 内置文件浏览器，抓手下拉关闭。"""
+        # 抓手条（下拉关闭热区）
+        grabber = ft.Container(width=42, height=5, border_radius=3,
+                               bgcolor=ft.Colors.GREY_400)
+        grabber_area = ft.Container(
+            content=ft.Row(controls=[grabber], alignment=ft.MainAxisAlignment.CENTER),
+            height=26, alignment=ft.alignment.center)
+        self._file_grabber = ft.GestureDetector(
+            content=grabber_area,
+            on_pan_start=lambda e: self._file_grab_start(e),
+            on_pan_update=lambda e: self._file_grab_update(e),
+            on_pan_end=lambda e: self._file_grab_end(e))
+
+        # 相册 / 文件 两个入口
+        album_inner = ft.Column(controls=[
+            ft.Icon(ft.icons.IMAGE_OUTLINED, size=26, color="#34C759"),
+            ft.Text(t("相册"), size=13, color=ft.Colors.GREY_800),
+        ], alignment=ft.MainAxisAlignment.CENTER,
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=4)
+        album_btn = ft.Container(
+            content=album_inner, height=64, border_radius=14, alignment=ft.alignment.center,
+            bgcolor=ft.Colors.with_opacity(0.08, ft.Colors.GREY_500),
+            animate_scale=ft.Animation(150, ft.AnimationCurve.EASE_OUT))
+        album_btn.on_click = self._file_drawer_album
+
+        file_inner = ft.Column(controls=[
+            ft.Icon(ft.icons.FOLDER_OUTLINED, size=26, color="#34C759"),
+            ft.Text(t("文件"), size=13, color=ft.Colors.GREY_800),
+        ], alignment=ft.MainAxisAlignment.CENTER,
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=4)
+        file_entry_btn = ft.Container(
+            content=file_inner, height=64, border_radius=14, alignment=ft.alignment.center,
+            bgcolor=ft.Colors.with_opacity(0.08, ft.Colors.GREY_500),
+            animate_scale=ft.Animation(150, ft.AnimationCurve.EASE_OUT))
+        file_entry_btn.on_click = self._file_drawer_any
+        entry_row = ft.Row(controls=[
+            ft.Container(expand=True, content=album_btn),
+            ft.Container(expand=True, content=file_entry_btn),
+        ], spacing=12)
+
+        # 路径栏：绿色"返回"（上级目录）+ 当前路径
+        self._file_drawer_back = ft.Text(t("返回"), size=16, color="#34C759")
+        back_box = ft.Container(content=self._file_drawer_back,
+                                padding=ft.padding.symmetric(horizontal=10, vertical=8),
+                                on_click=lambda e: self._file_drawer_go_up())
+        self._file_drawer_path = ft.Text("", size=13, color=ft.Colors.GREY_600,
+                                         expand=True, overflow=ft.TextOverflow.ELLIPSIS)
+        path_bar = ft.Container(
+            content=ft.Row(controls=[back_box, self._file_drawer_path],
+                           vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            bgcolor=ft.Colors.with_opacity(0.06, ft.Colors.GREY_500))
+
+        # 可滚动文件列表（用 ListView：官方可滚动可点击列表，命中最可靠，
+        # 避免 Column(scroll) 在桌面/部分机型吞掉子项点击）
+        self._file_drawer_list = ft.ListView(controls=[], spacing=0,
+                                             expand=True, padding=0)
+
+        sheet = ft.Container(
+            height=self._FILE_DRAWER_H,
+            bgcolor=ft.Colors.WHITE,
+            border_radius=ft.BorderRadius(top_left=22, top_right=22,
+                                         bottom_left=0, bottom_right=0),
+            content=ft.Column(controls=[
+                self._file_grabber,
+                ft.Container(content=entry_row,
+                             padding=ft.padding.symmetric(horizontal=16)),
+                ft.Container(height=6),
+                path_bar,
+                self._file_drawer_list,
+            ], spacing=0),
+            offset=ft.transform.Offset(0, 1),
+            animate_offset=ft.Animation(280, ft.AnimationCurve.EASE_OUT_CUBIC),
+        )
+        self._file_drawer_sheet = sheet
+        self._file_drawer = ft.Positioned(left=0, right=0, bottom=0, content=sheet)
+        self._file_drawer.visible = False
+        sheet.visible = False
+        self._file_drawer_cur = None
+        self._file_drag_dy = 0.0
+
+    # ---- 抓手下拉关闭（跟手）----
+    def _file_grab_start(self, e=None):
+        self._file_drag_dy = 0.0
+
+    def _file_grab_update(self, e=None):
+        d = getattr(e, "delta_y", None)
+        if d is None:
+            return
+        self._file_drag_dy = max(0.0, self._file_drag_dy + float(d))
+        self._file_drawer_sheet.offset = ft.transform.Offset(
+            0, self._file_drag_dy / self._FILE_DRAWER_H)
+        try:
+            self._file_drawer_sheet.update()
+        except Exception:
+            pass
+
+    def _file_grab_end(self, e=None):
+        if self._file_drag_dy > 120:
+            self._close_file_drawer()
+        else:
+            self._file_drag_dy = 0.0
+            self._file_drawer_sheet.offset = ft.transform.Offset(0, 0)
+            try:
+                self._file_drawer_sheet.update()
+            except Exception:
+                pass
+
+    # ---- 打开 / 关闭 ----
+    async def _open_file_drawer(self):
+        self._file_drag_dy = 0.0
+        self._file_drawer_cur = self._file_browser_start_dir()
+        self._refresh_file_drawer_dir(self._file_drawer_cur)
+        sheet = self._file_drawer_sheet
+        sheet.visible = True
+        self._file_drawer.visible = True
+        sheet.offset = ft.transform.Offset(0, 1)
+        try:
+            sheet.update()
+        except Exception:
+            pass
+        await asyncio.sleep(0.03)
+        sheet.offset = ft.transform.Offset(0, 0)
+        try:
+            sheet.update()
+        except Exception:
+            pass
+
+    async def _close_file_drawer_anim(self):
+        sheet = self._file_drawer_sheet
+        sheet.offset = ft.transform.Offset(0, 1)
+        try:
+            sheet.update()
+        except Exception:
+            pass
+        await asyncio.sleep(0.30)
+        sheet.visible = False
+        self._file_drawer.visible = False
+        try:
+            sheet.update()
+        except Exception:
+            pass
+
+    def _close_file_drawer(self):
+        try:
+            asyncio.run_coroutine_threadsafe(self._close_file_drawer_anim(), self._loop)
+        except Exception:
+            pass
+
+    def _close_file_drawer_now(self):
+        sheet = self._file_drawer_sheet
+        sheet.offset = ft.transform.Offset(0, 1)
+        sheet.visible = False
+        self._file_drawer.visible = False
+
+    # ---- 目录浏览 ----
+    def _refresh_file_drawer_dir(self, cur):
+        self._file_drawer_cur = cur
+        self._file_drawer_path.value = cur
+        rows = []
+        try:
+            entries = sorted(os.listdir(cur), key=lambda s: s.lower())
+            err = None
+        except PermissionError:
+            entries = None
+            err = t("没有访问权限，请在系统设置中允许所有文件访问")
+        except Exception as e:
+            entries = None
+            err = f"{t('无法读取目录')}: {e}"
+
+        if entries is None:
+            rows.append(ft.Container(
+                content=ft.Text(err, size=14, color=ft.Colors.RED_400,
+                                text_align=ft.TextAlign.CENTER),
+                padding=ft.padding.all(20)))
+        else:
+            parent = os.path.dirname(cur.rstrip("/"))
+            if parent and parent != cur and cur != "/":
+                rows.append(self._file_drawer_row(
+                    ft.icons.ARROW_UPWARD, ft.Colors.GREY_600, "..", "",
+                    lambda e: self._refresh_file_drawer_dir(parent)))
+            folders, files = [], []
+            for name in entries:
+                full = os.path.join(cur, name)
+                try:
+                    if os.path.isdir(full):
+                        folders.append((name, full))
+                    else:
+                        files.append((name, full))
+                except Exception:
+                    continue
+            for name, full in folders:
+                rows.append(self._file_drawer_row(
+                    ft.icons.FOLDER_OUTLINED, "#34C759", name, "",
+                    lambda e, p=full: self._refresh_file_drawer_dir(p),
+                    chevron=True))
+            for name, full in files:
+                try:
+                    sz = self._fmt_size(os.path.getsize(full))
+                except Exception:
+                    sz = ""
+                rows.append(self._file_drawer_row(
+                    ft.icons.INSERT_DRIVE_FILE_OUTLINED, ft.Colors.GREY_500,
+                    name, sz, lambda e, p=full: self._file_drawer_send(p)))
+        self._file_drawer_list.controls = rows
+        try:
+            self._file_drawer_sheet.update()
+        except Exception:
+            pass
+
+    def _file_drawer_row(self, icon, icon_color, name, sub, handler, chevron=False):
+        lead = ft.Icon(icon, size=22, color=icon_color)
+        if sub:
+            label = ft.Column(controls=[
+                ft.Text(name, size=15, color=ft.Colors.GREY_900),
+                ft.Text(sub, size=12, color=ft.Colors.GREY_500),
+            ], spacing=2, expand=True)
+        else:
+            label = ft.Text(name, size=15, color=ft.Colors.GREY_900, expand=True)
+        ctrls = [lead, label]
+        if chevron:
+            ctrls.append(ft.Icon(ft.icons.CHEVRON_RIGHT, size=18,
+                                 color=ft.Colors.GREY_400))
+        c = ft.Container(
+            content=ft.Row(controls=ctrls, spacing=10),
+            padding=ft.padding.symmetric(horizontal=16, vertical=11))
+        c.on_click = handler
+        return c
+
+    def _file_drawer_go_up(self):
+        cur = self._file_drawer_cur
+        if not cur:
+            return
+        parent = os.path.dirname(cur.rstrip("/"))
+        if parent and parent != cur:
+            self._refresh_file_drawer_dir(parent)
+
+    def _file_drawer_send(self, path):
+        self._btn_sound()
+        self._close_file_drawer()
+        self._ui(self.send_file(path))
+
+    # ---- 相册 / 系统文件入口（选完直接发送）----
+    def _file_drawer_album(self, e=None):
+        self._btn_sound()
+        self._close_file_drawer_now()
+        if self._file_picker_ok and self._file_picker:
+            try:
+                self._file_picker.pick_files(file_type=ft.FilePickerFileType.IMAGE)
+            except Exception as ex:
+                self._log(f"album pick failed: {ex}")
+
+    def _file_drawer_any(self, e=None):
+        self._btn_sound()
+        self._close_file_drawer_now()
+        if self._file_picker_ok and self._file_picker:
+            try:
+                self._file_picker.pick_files(file_type=ft.FilePickerFileType.ANY)
+            except Exception as ex:
+                self._log(f"file pick failed: {ex}")
+
+    async def _open_rec_panel(self):
+        """从底部滑入录音抽屉（待命态）。"""
+        sheet = self._rec_sheet
+        self._rec_panel_open = True
+        self._rec_time.value = "--:--"
+        self._rec_status.value = t("按住麦克风开始说话")
+        self._rec_status.color = ft.Colors.GREY_500
+        for b in self._rec_bars:
+            b.height = 6
+        sheet.visible = True
+        self._rec_panel.visible = True
+        # 先藏到屏外，下一帧滑入
+        sheet.offset = ft.transform.Offset(0, 1)
+        try:
+            sheet.update()
+        except Exception:
+            pass
+        await asyncio.sleep(0.03)
+        sheet.offset = ft.transform.Offset(0, 0)
+        try:
+            sheet.update()
+        except Exception:
+            pass
+
+    async def _close_rec_panel_anim(self):
+        """下滑收起抽屉。"""
+        sheet = self._rec_sheet
+        self._rec_tick_running = False
+        self._rec_panel_open = False
+        sheet.offset = ft.transform.Offset(0, 1)
+        try:
+            sheet.update()
+        except Exception:
+            pass
+        await asyncio.sleep(0.30)
+        sheet.visible = False
+        self._rec_panel.visible = False
+        try:
+            sheet.update()
+        except Exception:
+            pass
+
+    def _close_rec_panel(self, e=None):
+        """红X / 取消按钮：丢弃当前录音并收起抽屉。"""
+        path = getattr(self, "_recording_path", None)
+        self._recording_path = None
+        if path:
+            try:
+                vmsg.cancel_recording()
+            except Exception:
+                pass
+        self._mic_btn_normal()
+        try:
+            asyncio.run_coroutine_threadsafe(self._close_rec_panel_anim(), self._loop)
+        except Exception:
+            pass
+
+    def _mic_toggle(self, e=None):
+        """底部小麦克风：点开/收起录音抽屉。"""
+        if getattr(self, "_rec_panel_open", False):
+            self._close_rec_panel()
+        else:
+            try:
+                asyncio.run_coroutine_threadsafe(self._open_rec_panel(), self._loop)
+            except Exception:
+                pass
+
+    async def _rec_tick_loop(self):
+        """每100ms刷新录制时间与声纹波形。"""
+        t0 = time.time()
+        frame = 0
+        n = len(self._rec_bars)
+        while self._rec_tick_running:
+            try:
+                el = time.time() - t0
+                self._rec_time.value = "%02d:%02d" % (int(el) // 60, int(el) % 60)
+                level = vmsg.get_amplitude()
+                for i, b in enumerate(self._rec_bars):
+                    env = 1.0 - abs(i - (n - 1) / 2) / ((n + 1) / 2)
+                    wob = 0.3 + 0.7 * abs(math.sin(frame * 0.4 + i * 0.6))
+                    mag = max(level * 1.15, 0.12 * wob)
+                    b.height = max(6, min(40, 6 + 36 * env * mag))
+                try:
+                    self._rec_sheet.update()
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            frame += 1
+            await asyncio.sleep(0.1)
+
+    def _rec_big_press(self, e=None):
+        """抽屉内大麦克风按下：真正开始录音。"""
+        try:
+            path = vmsg.start_recording()
+            self._recording_path = path
+            self._rec_tick_running = True
+            self._cancel_mode = False
+            self._press_start_y = getattr(e, "global_y", None)
+            self._rec_status.value = t("录制中...")
+            self._rec_status.color = ft.Colors.GREY_900
+            self._set_cancel_btn(False)
+            try:
+                asyncio.run_coroutine_threadsafe(self._rec_tick_loop(), self._loop)
+            except Exception:
+                pass
+        except Exception as ex:
+            self._recording_path = None
+            self._append_system(t("录音启动失败: {e}").format(e=ex))
+
+    def _set_cancel_btn(self, active):
+        """active=True=上滑到取消区，按钮变红白字；False=恢复灰。"""
+        self._cancel_mode = bool(active)
+        try:
+            if active:
+                self._rec_cancel_btn.bgcolor = ft.Colors.RED_400
+                self._rec_cancel_icon.color = ft.Colors.WHITE
+                self._rec_cancel_text.value = t("松开取消")
+                self._rec_cancel_text.color = ft.Colors.WHITE
+            else:
+                self._rec_cancel_btn.bgcolor = ft.Colors.with_opacity(0.12, ft.Colors.GREY_500)
+                self._rec_cancel_icon.color = ft.Colors.GREY_600
+                self._rec_cancel_text.value = t("取消")
+                self._rec_cancel_text.color = ft.Colors.GREY_600
+            self._rec_cancel_btn.visible = True
+            self._rec_cancel_btn.update()
+        except Exception:
+            pass
+
+    def _rec_big_move(self, e=None):
+        """手指拖动：上滑超过阈值进入取消模式，取消按钮变红。"""
+        if not getattr(self, "_recording_path", None):
+            return
+        sy = self._press_start_y
+        cy = getattr(e, "global_y", None)
+        if sy is None or cy is None:
+            return
+        dy = sy - cy  # 上滑为正
+        self._set_cancel_btn(dy > 90)
+
+    def _rec_to_standby(self):
+        """发送完/丢弃单条录音后，抽屉保持打开，回到待命态（可继续录下一条）。"""
+        self._rec_tick_running = False
+        self._recording_path = None
+        self._rec_time.value = "--:--"
+        self._rec_status.value = t("按住麦克风开始说话")
+        self._rec_status.color = ft.Colors.GREY_500
+        for b in self._rec_bars:
+            b.height = 6
+        self._hide_cancel_btn()
+        try:
+            self._rec_sheet.update()
+        except Exception:
+            pass
+
+    def _rec_big_release(self, e=None):
+        """大麦克风松开：取消模式则丢弃，否则停止并发送，然后回到待命态。"""
+        path = getattr(self, "_recording_path", None)
+        self._recording_path = None
+        self._rec_tick_running = False
+        cancel_mode = self._cancel_mode
+        self._cancel_mode = False
+        self._press_start_y = None
+        self._mic_btn_normal()
+        if not path:
+            self._hide_cancel_btn()
+            return
+        # 上滑取消：丢弃录音
+        if cancel_mode:
+            try:
+                vmsg.cancel_recording()
+            except Exception:
+                pass
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+            self._rec_to_standby()
+            return
+        try:
+            dur, fpath = vmsg.stop_recording()
+        except Exception as ex:
+            self._append_system(t("录音停止失败: {e}").format(e=ex))
+            self._rec_to_standby()
+            return
+        if not fpath or dur < 0.6:
+            try:
+                os.remove(fpath)
+            except Exception:
+                pass
+            self._rec_to_standby()
+            return
+        if not os.path.exists(fpath) or os.path.getsize(fpath) == 0:
+            self._append_system(t("录音文件未生成（桌面端录音库可能缺失，请在手机上测试语音消息）"))
+            self._rec_to_standby()
+            return
+        self._ui(self.send_file(fpath, is_voice=True, duration=dur))
+        self._rec_to_standby()
+
+    def _hide_cancel_btn(self):
+        try:
+            self._cancel_mode = False
+            self._rec_cancel_btn.visible = False
+            self._rec_cancel_btn.update()
+        except Exception:
+            pass
+
+    def _rec_big_cancel(self, e=None):
+        """手指滑出大麦克风：丢弃，抽屉回到待命。"""
+        path = getattr(self, "_recording_path", None)
+        self._recording_path = None
+        self._rec_tick_running = False
+        if path:
+            try:
+                vmsg.cancel_recording()
+            except Exception:
+                pass
+        # 回到待命显示
+        self._rec_time.value = "--:--"
+        self._rec_status.value = t("按住麦克风开始说话")
+        for b in self._rec_bars:
+            b.height = 6
+        try:
+            self._rec_sheet.update()
+        except Exception:
+            pass
+
+    def _play_voice_message(self, m):
+        """点击语音气泡：播放/停止。"""
+        path = getattr(m, "download_path", "") or ""
+        if m.is_self and m.status == "completed":
+            # 自己发的语音：找本地文件
+            path = getattr(m, "_local_path", "") or path
+        if not path or not os.path.exists(path):
+            self._append_system(t("语音文件未就绪"))
+            return
+        self._btn_sound()
+        if vmsg.is_playing():
+            vmsg.stop_voice()
+            return
+        def _done():
+            self._ui(self._refresh_messages, self.current_conv)
+        try:
+            vmsg.play_voice(path, _done)
+        except Exception as ex:
+            self._append_system(t("播放失败: {e}").format(e=ex))
 
     # ==================== 语音通话（复用 VoiceCall + 信令） ====================
     def _get_private_room_id(self, u1, u2):
@@ -2465,10 +3155,18 @@ class MobileChatApp:
                     return d
             except Exception:
                 continue
-        try:
-            return os.getcwd()
-        except Exception:
-            return "/"
+        # 桌面环境：优先用户主目录 / 下载目录，最后才是当前工作目录
+        # （flet 桌面进程 cwd 可能是 C:\Windows\System32，不适合作为浏览起点）
+        for d in [os.path.expanduser("~"),
+                  os.path.join(os.path.expanduser("~"), "Downloads"),
+                  os.getcwd()]:
+            try:
+                if d and os.path.isdir(d):
+                    os.listdir(d)
+                    return d
+            except Exception:
+                continue
+        return "/"
 
     @staticmethod
     def _fmt_size(n):
