@@ -461,21 +461,30 @@ class MobileChatApp:
             self._apply_theme_mode(self._theme_mode)
         except Exception:
             pass
-        # 文件选择：Android用FilePicker，桌面端用tkinter（Flet0.86.5桌面端Unknown control）
+        # 文件选择：FilePicker 同时挂 overlay + services，确保安卓上能弹窗
         self._file_picker = None
         self._file_picker_ok = False
         if _is_android():
             try:
                 _trace_event("FilePicker init start")
-                # Flet 0.86.5：FilePicker 是 Service，构造只接受 on_upload/data/key/ref，
-                # 不能传 on_result/visible；必须无参构造后再给实例 on_result 赋值，挂 page.services
                 self._file_picker = ft.FilePicker()
                 try:
                     self._file_picker.on_result = self._on_file_picked
                 except Exception as _ev:
                     _trace_event(f"FilePicker bind on_result FAILED: {_ev!r}")
-                _mount_service(page, self._file_picker)
-                _trace_event(f"FilePicker mounted, has services={hasattr(page, 'services')}")
+                # 关键：FilePicker 必须挂 overlay，挂 services 在安卓上不弹窗
+                try:
+                    if hasattr(page, "overlay"):
+                        page.overlay.append(self._file_picker)
+                        _trace_event("FilePicker mounted to overlay")
+                except Exception as e_ov:
+                    _trace_event(f"overlay mount failed: {e_ov!r}")
+                try:
+                    if hasattr(page, "services"):
+                        page.services.append(self._file_picker)
+                        _trace_event("FilePicker mounted to services too")
+                except Exception:
+                    pass
                 try:
                     page.update()
                 except Exception:
@@ -1598,48 +1607,49 @@ class MobileChatApp:
             return uri_str
 
     def _pick_file_with_fallback(self, path_display, send_btn, dlg):
-        """选择文件：优先FilePicker，失败用tkinter兜底（桌面端，独立线程避免阻塞UI）。"""
+        """选择文件：直接用 Flet FilePicker，确保挂 overlay。"""
         self._pending_file_dialog = dlg
         self._pending_path_display = path_display
         self._pending_send_btn = send_btn
         if not (self._file_picker_ok and self._file_picker):
             _trace_event(f"FilePicker unavailable ok={self._file_picker_ok} obj={self._file_picker is not None}")
-        if self._file_picker_ok and self._file_picker:
+            self._log(t("文件选择器不可用"))
+            return
+        try:
+            _trace_event("FilePicker.pick_files invoking")
+            # 确保 FilePicker 在 overlay 里
             try:
-                _trace_event("FilePicker.pick_files invoking")
-                # 惰性确保挂在 services（0.86 原生通道）
+                if hasattr(self.page, "overlay") and self._file_picker not in list(self.page.overlay):
+                    self.page.overlay.append(self._file_picker)
+                    _trace_event("FilePicker re-appended to overlay")
+            except Exception:
+                pass
+            try:
+                if hasattr(self.page, "services") and self._file_picker not in list(self.page.services):
+                    self.page.services.append(self._file_picker)
+            except Exception:
+                pass
+            self.page.update()
+            self._file_picker.pick_files(dialog_title=t("选择要发送的文件"), allow_multiple=False)
+            _trace_event("FilePicker.pick_files returned (picker launched)")
+        except Exception as ex:
+            _trace_event(f"FilePicker.pick_files EXC: {ex!r}")
+            self._log(f"FilePicker failed: {ex}")
+            # 最后兜底：tkinter（仅桌面端有用，安卓上会静默失败）
+            def _tk_worker():
                 try:
-                    if hasattr(self.page, "services") and self._file_picker not in list(self.page.services):
-                        self.page.services.append(self._file_picker)
-                        self.page.update()
-                except Exception:
-                    pass
-                self._file_picker.pick_files(dialog_title=t("选择要发送的文件"), allow_multiple=False)
-                _trace_event("FilePicker.pick_files returned (picker launched)")
-                return
-            except Exception as ex:
-                _trace_event(f"FilePicker.pick_files EXC: {ex!r}")
-                self._log(f"FilePicker failed: {ex}, fallback to tkinter")
-        # tkinter 兜底：必须放独立线程，否则 askopenfilename 阻塞会冻结整个 Flet 窗口
-        def _tk_worker():
-            try:
-                import tkinter as tk
-                from tkinter import filedialog
-                root = tk.Tk()
-                root.withdraw()
-                root.attributes("-topmost", True)
-                file_path = filedialog.askopenfilename(title=t("选择要发送的文件"))
-                root.destroy()
-                if file_path:
-                    self._ui(self._on_file_picked_path, file_path)
-            except Exception as ex:
-                self._log(f"tkinter pick failed: {ex}")
-                def _err():
-                    if path_display:
-                        path_display.value = t("文件选择失败，请重试")
-                        self.page.update()
-                self._ui(_err)
-        threading.Thread(target=_tk_worker, daemon=True).start()
+                    import tkinter as tk
+                    from tkinter import filedialog
+                    root = tk.Tk()
+                    root.withdraw()
+                    root.attributes("-topmost", True)
+                    file_path = filedialog.askopenfilename(title=t("选择要发送的文件"))
+                    root.destroy()
+                    if file_path:
+                        self._ui(self._on_file_picked_path, file_path)
+                except Exception as ex2:
+                    _trace_event(f"tkinter fallback also failed: {ex2!r}")
+            threading.Thread(target=_tk_worker, daemon=True).start()
 
     def _on_file_picked_path(self, filepath):
         """处理文件路径（FilePicker和tkinter共用）。Android content URI 先解析为临时文件。"""
@@ -3307,19 +3317,8 @@ class MobileChatApp:
 # NameError: name 'pick_photo_native' is not defined。
 def pick_photo_native(app, path_display, send_btn, dlg):
     """
-    使用Android原生Photo Picker选择图片，不可用时自动降级到原有Flet FilePicker/tkinter。
-
-    这是新增的独立函数，不修改原有 _pick_file_with_fallback 的任何一行代码。
-    集成方式：在 _show_file_send_dialog 的 _pick 函数中，将
-        self._pick_file_with_fallback(path_display, send_file_btn, dlg)
-    替换为
-        pick_photo_native(self, path_display, send_file_btn, dlg)
-
-    参数:
-        app: MobileChatApp 实例（即 self）
-        path_display: 路径显示控件
-        send_btn: 发送按钮
-        dlg: 文件发送弹窗
+    文件选择：直接用 Flet FilePicker（底层 Flutter file_picker），
+    不再走 AndroidX Activity Result API（serious_python 环境不兼容）。
     """
     def _ft(msg):
         try:
@@ -3330,72 +3329,8 @@ def pick_photo_native(app, path_display, send_btn, dlg):
             with open(os.path.join(d, "debug_trace.txt"), "a", encoding="utf-8") as _f:
                 _f.write(f"[{time.strftime('%H:%M:%S')}] [PICK] {msg}\n")
         except Exception: pass
-    _ft("pick_photo_native called")
-    # Flet/serious_python 环境没有 kivy 的 android.activity 模块，原生
-    # Photo Picker 的 onActivityResult 回调无法绑定，直接走 Flet FilePicker
-    # （底层 Flutter file_picker，Android 稳定且自动把 content URI 复制为缓存文件）
-    try:
-        import sys as _sys
-        _is_droid = "android" in _sys.modules or hasattr(_sys, "getandroidapilevel")
-    except Exception:
-        _is_droid = False
-    if _is_droid:
-        # 优先用 AndroidX registerForActivityResult 原生选择器（绕过 Flet file_picker 包，
-        # 该包在荣耀 MagicOS 等 ROM 上 launch 成功但系统选择器不弹窗）
-        try:
-            from android_native_picker import pick_file_native
-            def _on_native_result(path):
-                _ft(f"native picker result: {path!r}")
-                if path:
-                    try:
-                        app._on_file_picked_path(path)
-                        _ft(f"_on_file_picked_path OK for {path!r}")
-                    except Exception as ex:
-                        _ft(f"_on_file_picked_path FAIL: {ex!r}")
-                        app._pick_file_with_fallback(path_display, send_btn, dlg)
-                else:
-                    _ft("native picker returned None, fallback to Flet FilePicker")
-                    app._pick_file_with_fallback(path_display, send_btn, dlg)
-            ok = pick_file_native(_on_native_result, mime_types=["*/*"])
-            _ft(f"pick_file_native returned {ok}")
-            if ok:
-                return
-        except Exception as ex:
-            _ft(f"native picker import/init failed: {ex!r}, fallback to Flet FilePicker")
-        app._pick_file_with_fallback(path_display, send_btn, dlg)
-        return
-    try:
-        from android_photo_picker import AndroidPhotoPicker
-        _ft("android_photo_picker import OK (desktop test)")
-    except ImportError as ie:
-        _ft(f"android_photo_picker import FAIL: {ie!r}, fallback to flet")
-        app._pick_file_with_fallback(path_display, send_btn, dlg)
-        return
-
-    if not hasattr(app, '_photo_picker') or app._photo_picker is None:
-        app._photo_picker = AndroidPhotoPicker(page=app.page)
-
-    def on_photos(paths):
-        _ft(f"on_photos callback: paths={paths!r}")
-        if paths:
-            try:
-                app._on_file_picked_path(paths[0])
-                _ft(f"_on_file_picked_path OK for {paths[0]!r}")
-            except Exception as ex:
-                _ft(f"_on_file_picked_path FAIL: {ex!r}")
-                raise
-        else:
-            _ft("on_photos: paths empty (user cancelled?)")
-
-    try:
-        ok = app._photo_picker.pick(on_photos, multi=False)
-        _ft(f"picker.pick returned {ok}")
-    except Exception as ex:
-        _ft(f"picker.pick EXCEPTION: {ex!r}")
-        ok = False
-    if not ok:
-        _ft("fallback to flet FilePicker")
-        app._pick_file_with_fallback(path_display, send_btn, dlg)
+    _ft("pick_photo_native called -> direct Flet FilePicker")
+    app._pick_file_with_fallback(path_display, send_btn, dlg)
 
 
 # ======================================================================
