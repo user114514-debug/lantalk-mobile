@@ -199,7 +199,16 @@ echo           retry_on: error
 echo           command: ^|
 echo             export PATH="$HOME/.local/bin:$PATH"
 echo             rm -rf build/ .flet/
-echo             flet build apk --module-name mobile_main --project "LanTalk" --org "com.lantalk" --product "lantalk" --build-number "%BNUM%" --build-version "%APP_VER%"
+echo             echo "=== Step 1: flet build to generate Flutter project ==="
+echo             flet build apk --module-name mobile_main --project "LanTalk" --org "com.lantalk" --product "lantalk" --build-number "%BNUM%" --build-version "%APP_VER%" || echo "flet gradle phase failed, patching and rebuilding manually"
+echo             test -d build/flutter/android/app || exit 1
+echo             echo "=== Step 2: patch build.gradle for core library desugaring ==="
+echo             python3 scripts/patch_desugaring.py
+echo             echo "=== Step 3: flutter build apk ==="
+echo             cd build/flutter
+echo             flutter build apk --release
+echo             cd ../..
+echo             test -f build/flutter/build/app/outputs/flutter-apk/app-release.apk || exit 1
 echo.
 echo       - name: Upload APK
 echo         uses: actions/upload-artifact@v4

@@ -61,7 +61,16 @@ jobs:
           command: |
             export PATH="$HOME/.local/bin:$PATH"
             rm -rf build/ .flet/
-            flet build apk --module-name mobile_main --project "LanTalk" --org "com.lantalk" --product "lantalk" --build-number "20261003" --build-version "4.0.0"
+            echo "=== Step 1: flet build to generate Flutter project ==="
+            flet build apk --module-name mobile_main --project "LanTalk" --org "com.lantalk" --product "lantalk" --build-number "20261003" --build-version "4.0.0" 
+            test -d build/flutter/android/app 
+            echo "=== Step 2: patch build.gradle for core library desugaring ==="
+            python3 scripts/patch_desugaring.py
+            echo "=== Step 3: flutter build apk ==="
+            cd build/flutter
+            flutter build apk --release
+            cd ../..
+            test -f build/flutter/build/app/outputs/flutter-apk/app-release.apk 
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
