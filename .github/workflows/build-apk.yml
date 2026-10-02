@@ -52,6 +52,10 @@ jobs:
           test -f assets/fonts/Twemoji.ttf
           test -d assets/flags
 
+      - name: Patch flet Android templates for desugaring
+        run: |
+          python3 scripts/patch_flet_template.py
+
       - name: Build APK with icon (retry + clean cache on failure)
         uses: nick-fields/retry@v3
         with:
@@ -61,16 +65,7 @@ jobs:
           command: |
             export PATH="$HOME/.local/bin:$PATH"
             rm -rf build/ .flet/
-            echo "=== Step 1: flet build to generate Flutter project ==="
-            flet build apk --module-name mobile_main --project "LanTalk" --org "com.lantalk" --product "lantalk" --build-number "20261003" --build-version "4.0.0" 
-            test -d build/flutter/android/app 
-            echo "=== Step 2: patch build.gradle for core library desugaring ==="
-            python3 scripts/patch_desugaring.py
-            echo "=== Step 3: flutter build apk ==="
-            cd build/flutter
-            flutter build apk --release
-            cd ../..
-            test -f build/flutter/build/app/outputs/flutter-apk/app-release.apk 
+            flet build apk --module-name mobile_main --project "LanTalk" --org "com.lantalk" --product "lantalk" --build-number "20261003" --build-version "4.0.0"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
