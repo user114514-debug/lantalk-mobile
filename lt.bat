@@ -171,10 +171,15 @@ echo         uses: actions/setup-python@v5
 echo         with:
 echo           python-version: '3.12'
 echo.
-echo       - name: Install Flet and dependencies
-echo         run: ^|
-echo           python -m pip install --upgrade pip
-echo           pip install -r requirements.txt
+echo       - name: Install Flet CLI (retry on network flake)
+echo         uses: nick-fields/retry@v3
+echo         with:
+echo           timeout_minutes: 5
+echo           max_attempts: 3
+echo           retry_on: error
+echo           command: ^|
+echo             python -m pip install --upgrade pip
+echo             pip install flet==0.86.5
 echo.
 echo       - name: Pre-build self-check
 echo         run: ^|
@@ -183,9 +188,15 @@ echo           test -f assets/icon.png
 echo           test -f assets/fonts/Twemoji.ttf
 echo           test -d assets/flags
 echo.
-echo       - name: Build APK with icon
-echo         run: ^|
-echo           flet build apk --module-name mobile_main --project "LanTalk" --org "com.lantalk" --product "lantalk" --build-number "%BNUM%" --build-version "%APP_VER%" --icon "assets/icon.png"
+echo       - name: Build APK with icon (retry + clean cache on failure)
+echo         uses: nick-fields/retry@v3
+echo         with:
+echo           timeout_minutes: 40
+echo           max_attempts: 3
+echo           retry_on: error
+echo           command: ^|
+echo             rm -rf build/ .flet/
+echo             python -m flet build apk --module-name mobile_main --project "LanTalk" --org "com.lantalk" --product "lantalk" --build-number "%BNUM%" --build-version "%APP_VER%" --icon "assets/icon.png"
 echo.
 echo       - name: Upload APK
 echo         uses: actions/upload-artifact@v4
