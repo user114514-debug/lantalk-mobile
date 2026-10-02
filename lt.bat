@@ -190,9 +190,13 @@ echo           test -f assets/icon.png
 echo           test -f assets/fonts/Twemoji.ttf
 echo           test -d assets/flags
 echo.
-echo       - name: Patch flet Android templates for desugaring
+echo       - name: Setup Gradle init script for desugaring
 echo         run: ^|
-echo           python3 scripts/patch_flet_template.py
+echo           GRADLE_HOME="${GRADLE_USER_HOME:-$HOME/.gradle}"
+echo           mkdir -p "$GRADLE_HOME/init.d"
+echo           cp scripts/desugaring-init.gradle "$GRADLE_HOME/init.d/"
+echo           echo "Installed init scripts:"
+echo           ls -la "$GRADLE_HOME/init.d/"
 echo.
 echo       - name: Build APK with icon ^(retry + clean cache on failure^)
 echo         uses: nick-fields/retry@v3

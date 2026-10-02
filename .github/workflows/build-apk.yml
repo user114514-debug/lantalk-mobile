@@ -52,9 +52,13 @@ jobs:
           test -f assets/fonts/Twemoji.ttf
           test -d assets/flags
 
-      - name: Patch flet Android templates for desugaring
+      - name: Setup Gradle init script for desugaring
         run: |
-          python3 scripts/patch_flet_template.py
+          GRADLE_HOME="${GRADLE_USER_HOME:-$HOME/.gradle}"
+          mkdir -p "$GRADLE_HOME/init.d"
+          cp scripts/desugaring-init.gradle "$GRADLE_HOME/init.d/"
+          echo "Installed init scripts:"
+          ls -la "$GRADLE_HOME/init.d/"
 
       - name: Build APK with icon (retry + clean cache on failure)
         uses: nick-fields/retry@v3

@@ -1,0 +1,20 @@
+// Gradle init script: enable core library desugaring for Android app modules.
+// Required by flutter_local_notifications (pulled in via flet-android-notifications).
+// Placed into ~/.gradle/init.d/ so Gradle auto-applies it to every build,
+// including the Gradle invocation triggered internally by `flet build apk`.
+
+allprojects {
+    afterEvaluate { proj ->
+        if (proj.plugins.hasPlugin('com.android.application')) {
+            proj.android {
+                compileOptions {
+                    coreLibraryDesugaringEnabled true
+                }
+            }
+            proj.dependencies {
+                coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.0.4'
+            }
+            println "[desugaring-init] core library desugaring enabled for project: " + proj.name
+        }
+    }
+}
