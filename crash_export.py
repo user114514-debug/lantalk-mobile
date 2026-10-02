@@ -27,37 +27,55 @@ def _export_via_mediastore(log_files, log_dir):
     if act is None:
         return 0, "无法获取 Activity"
 
-    ContentValues = autoclass("android.content.ContentValues")
-    MediaStore = autoclass("android.provider.MediaStore")
-    ContentResolver = act.getContentResolver()
+    try:
+        ContentValues = autoclass("android.content.ContentValues")
+        MediaStore = autoclass("android.provider.MediaStore")
+        # pyjnius 内部类必须用 $ 分隔，不能用 . 访问
+        MediaStoreDownloads = autoclass("android.provider.MediaStore$Downloads")
+        ContentResolver = act.getContentResolver()
+    except Exception as e:
+        return 0, f"类加载失败: {e}"
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     rel_path = f"Download/LanTalk_crash_logs_{timestamp}"
 
     count = 0
+    last_err = ""
     for fname in sorted(log_files, reverse=True):
         src = os.path.join(log_dir, fname)
         try:
             values = ContentValues()
-            values.put(MediaStore.Downloads.DISPLAY_NAME, fname)
-            values.put(MediaStore.Downloads.MIME_TYPE, "text/plain")
-            values.put(MediaStore.Downloads.RELATIVE_PATH, rel_path)
+            values.put(MediaStoreDownloads.DISPLAY_NAME, fname)
+            values.put(MediaStoreDownloads.MIME_TYPE, "text/plain")
+            values.put(MediaStoreDownloads.RELATIVE_PATH, rel_path)
 
             uri = ContentResolver.insert(
-                MediaStore.Downloads.EXTERNAL_CONTENT_URI, values
+                MediaStoreDownloads.EXTERNAL_CONTENT_URI, values
             )
             if uri is None:
+                last_err = "insert返回null"
                 continue
 
+            # 用 Java 字节流写入，避免 Python bytes 和 Java OutputStream 类型不兼容
             out_stream = ContentResolver.openOutputStream(uri)
-            with open(src, "rb") as f:
-                out_stream.write(f.read())
+            FileInputStream = autoclass("java.io.FileInputStream")
+            fis = FileInputStream(src)
+            buf = bytearray(8192)
+            while True:
+                n = fis.read(buf)
+                if n <= 0:
+                    break
+                out_stream.write(buf, 0, n)
+            fis.close()
             out_stream.close()
             count += 1
-        except Exception:
+        except Exception as e:
+            last_err = str(e)
             continue
 
-    return count, f"Download/LanTalk_crash_logs_{timestamp}"
+    if count > 0:
+        return count, f"Download/LanTalk_crash_logs_{timestamp}"
+    return 0, f"MediaStore 写入失败: {last_err}"
 
 
 def export_crash_logs(log_dir="crash_logs"):
