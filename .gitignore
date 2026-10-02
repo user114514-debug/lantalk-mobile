@@ -6,3 +6,4 @@ build/
 *.log
 venv/
 .flet/
+crash_logs/
