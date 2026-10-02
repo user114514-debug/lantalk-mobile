@@ -1690,7 +1690,10 @@ class MobileChatApp:
         def _pick(ev):
             self._btn_sound()
             self._animate_btn(pick_btn)
-            pick_photo_native(self, path_display, send_file_btn, dlg)
+            # 关闭弹窗，打开应用内文件浏览器
+            self._close_dialog_with_fade(dlg)
+            self._active_dialog = None
+            self._ui(self.show_file_browser())
 
         # 选择文件按钮（iOS 风格渐变）
         pick_btn = ft.Container(
@@ -2402,6 +2405,137 @@ class MobileChatApp:
                  if (f.startswith("crash_") or f == "debug_trace.txt") and f.endswith(".txt")]
         files.sort(reverse=True)
         return files
+
+    # ============ 应用内文件浏览器（绕开系统 FilePicker）============
+    def _file_browser_start_dir(self):
+        """找一个可访问的起始目录。"""
+        for d in ["/storage/emulated/0", "/sdcard",
+                  "/storage/emulated/0/Download", "/storage/emulated/0/DCIM",
+                  "/storage/emulated/0/Pictures"]:
+            try:
+                if os.path.isdir(d):
+                    os.listdir(d)
+                    return d
+            except Exception:
+                continue
+        try:
+            return os.getcwd()
+        except Exception:
+            return "/"
+
+    @staticmethod
+    def _fmt_size(n):
+        try:
+            n = int(n)
+        except Exception:
+            return ""
+        if n < 1024: return f"{n} B"
+        if n < 1048576: return f"{n//1024} KB"
+        if n < 1073741824: return f"{n//1048576} MB"
+        return f"{n/1073741824:.1f} GB"
+
+    async def show_file_browser(self, cur_dir=None, direction="right"):
+        """应用内文件浏览器：直接列目录，选文件后发送。"""
+        if cur_dir is None:
+            cur_dir = self._file_browser_start_dir()
+        try:
+            entries = sorted(os.listdir(cur_dir), key=lambda s: s.lower())
+        except PermissionError:
+            entries = None
+            err = t("没有访问权限，请在系统设置中允许所有文件访问")
+        except Exception as e:
+            entries = None
+            err = f"{t('无法读取目录')}: {e}"
+
+        rows = []
+        if entries is None:
+            rows.append(ft.Container(
+                content=ft.Text(err, size=14, color=ft.Colors.RED_400, text_align=ft.TextAlign.CENTER),
+                padding=ft.padding.all(20)))
+        else:
+            parent = os.path.dirname(cur_dir.rstrip("/"))
+            if parent and parent != cur_dir and cur_dir != "/":
+                rows.append(ft.Container(
+                    content=ft.Row(controls=[
+                        ft.Icon(ft.icons.ARROW_UPWARD, size=20, color=ft.Colors.GREY_600),
+                        ft.Text("..", size=15, color=ft.Colors.GREY_700),
+                    ], spacing=10),
+                    padding=ft.padding.symmetric(horizontal=16, vertical=12),
+                    on_click=lambda e: self._ui(self.show_file_browser(parent, direction="right"))))
+            folders = []
+            files = []
+            for name in entries:
+                full = os.path.join(cur_dir, name)
+                try:
+                    if os.path.isdir(full):
+                        folders.append((name, full))
+                    else:
+                        files.append((name, full))
+                except Exception:
+                    continue
+            for name, full in folders:
+                rows.append(ft.Container(
+                    content=ft.Row(controls=[
+                        ft.Icon(ft.icons.FOLDER_OUTLINED, size=22, color="#34C759"),
+                        ft.Text(name, size=15, color=ft.Colors.GREY_900, expand=True),
+                        ft.Icon(ft.icons.CHEVRON_RIGHT, size=18, color=ft.Colors.GREY_400),
+                    ], spacing=10),
+                    padding=ft.padding.symmetric(horizontal=16, vertical=11),
+                    on_click=lambda e, p=full: self._ui(self.show_file_browser(p, direction="right"))))
+            for name, full in files:
+                try:
+                    sz = self._fmt_size(os.path.getsize(full))
+                except Exception:
+                    sz = ""
+                rows.append(ft.Container(
+                    content=ft.Row(controls=[
+                        ft.Icon(ft.icons.INSERT_DRIVE_FILE_OUTLINED, size=22, color=ft.Colors.GREY_500),
+                        ft.Column(controls=[
+                            ft.Text(name, size=15, color=ft.Colors.GREY_900),
+                            ft.Text(sz, size=12, color=ft.Colors.GREY_500),
+                        ], spacing=2, expand=True),
+                    ], spacing=10),
+                    padding=ft.padding.symmetric(horizontal=16, vertical=11),
+                    on_click=lambda e, p=full: self._on_pick_browser_file(p)))
+
+        def _back(e=None):
+            self._btn_sound()
+            self._ui(self.show_chat(direction="left"))
+
+        nav = ft.Container(
+            content=ft.Row(controls=[
+                ft.Container(content=ft.Text(t("返回"), size=16, color="#34C759"),
+                             padding=ft.padding.symmetric(horizontal=8, vertical=8),
+                             on_click=_back),
+                ft.Text(cur_dir, size=13, color=ft.Colors.GREY_600, expand=True,
+                        overflow=ft.TextOverflow.ELLIPSIS),
+            ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=ft.padding.symmetric(horizontal=8, vertical=10), bgcolor=ft.Colors.WHITE)
+
+        group = ft.Container(content=ft.Column(controls=rows, spacing=0),
+                             bgcolor=ft.Colors.WHITE, border_radius=12,
+                             margin=ft.margin.symmetric(horizontal=16, vertical=8))
+        root = ft.Container(
+            content=ft.Column(controls=[
+                nav,
+                ft.Container(expand=True, content=ft.Column(controls=[group], scroll=ft.ScrollMode.AUTO)),
+            ], spacing=0, expand=True),
+            bgcolor="#F2F2F7", expand=True)
+        await self._mount_with_fade(root, direction=direction)
+
+    def _on_pick_browser_file(self, path):
+        """文件浏览器选中文件：关闭弹窗，发送，回到聊天。"""
+        self._btn_sound()
+        async def _do():
+            try:
+                if self._active_dialog is not None:
+                    self._close_dialog_with_fade(self._active_dialog)
+                    self._active_dialog = None
+            except Exception:
+                pass
+            await self.send_file(path)
+            await self.show_chat(direction="left")
+        self._ui(_do())
 
     async def show_crash_logs(self, direction="right"):
         """崩溃日志列表页面。"""
