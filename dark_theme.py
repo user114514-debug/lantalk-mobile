@@ -8,7 +8,7 @@ dark_theme.py — LanTalk 移动端深色主题“控件树换肤层”（新增
 page.theme_mode = DARK，所以“点了深色依旧是白色”。
 
 本模块在【不修改任何原有控件构建代码】的前提下，递归遍历已经构建好的控件树，
-把“明确在映射表中的浅色”替换为深色；品牌蓝、蓝紫渐变、红/绿按钮、彩色按钮上
+把“明确在映射表中的浅色”替换为深色；品牌绿、绿色渐变、红/绿按钮、彩色按钮上
 的白色图标与文字都不在映射表中，保持不变。切回亮色时，依据首次记录的原始颜色
 原样还原（不是反向硬凑，可反复切换不累积误差）。
 
@@ -28,7 +28,8 @@ import flet as ft
 DARK_BG = "#1C1C1E"          # 主背景
 DARK_SURFACE = "#2C2C2E"     # 卡片 / 对方气泡 / 对话框表面
 DARK_SURFACE_2 = "#3A3A3C"   # 输入框填充 / 未选中chip
-DARK_BLUE_CARD = "#1F2B3A"   # 浅蓝信息卡 blue50 对应深色
+DARK_BLUE_CARD = "#1F2B3A"   # 浅蓝信息卡 blue50 对应深色（保留兼容）
+DARK_GREEN_CARD = "#1E2B22"  # 浅绿信息卡 green50 对应深色（当前品牌色为绿）
 DARK_TEXT = "#F2F2F7"        # 主文字
 DARK_TEXT_2 = "#AEAEB2"      # 次要文字
 DARK_TEXT_3 = "#C7C7CC"      # 更弱文字
@@ -37,14 +38,19 @@ DARK_TEXT_3 = "#C7C7CC"      # 更弱文字
 SURFACE_MAP = {
     "#f2f2f7": DARK_BG,
     "white": DARK_SURFACE,
+    "grey50": DARK_SURFACE,
     "grey100": DARK_SURFACE_2,
     "grey200": DARK_SURFACE_2,
     "blue50": DARK_BLUE_CARD,
+    "green50": DARK_GREEN_CARD,
 }
 # 前景(文字/图标)属性：深色文字 -> 浅色文字；white 不在表中 => 保持白色
 FORECOLOR_MAP = {
+    "grey500": DARK_TEXT_3,
+    "grey600": DARK_TEXT_2,
     "grey800": DARK_TEXT_2,
     "grey900": DARK_TEXT,
+    "green800": "#81C784",
     "black87": DARK_TEXT,
     "black54": DARK_TEXT_3,
     "black45": DARK_TEXT_3,
@@ -153,7 +159,8 @@ def _surface_attrs(ctrl):
     return ["bgcolor", "fill_color"]
 
 
-def _apply_attr(ctrl, attr, table, is_dark, fill_none_surface=False):
+def _apply_attr(ctrl, attr, table, is_dark, fill_none_surface=False,
+                fill_none_foreground=False):
     """处理单个颜色属性：dark 改色并记录原值；light 还原原值。"""
     try:
         cur = getattr(ctrl, attr, None)
@@ -168,6 +175,9 @@ def _apply_attr(ctrl, attr, table, is_dark, fill_none_surface=False):
         # Card/Dialog 默认白底(None)：深色下补深色表面（仅 bgcolor）
         if cur is None and fill_none_surface and attr == "bgcolor":
             target, changed = DARK_SURFACE, True
+        # TextField 未指定文字色(None)：深色下补浅色文字（仅 color）
+        if cur is None and fill_none_foreground and attr == "color":
+            target, changed = DARK_TEXT, True
         if changed:
             if not hasattr(ctrl, orig_key):
                 try:
@@ -205,6 +215,10 @@ def skin_control(ctrl, is_dark, visited=None, depth=0):
     except Exception:
         is_default_surface = False
     try:
+        is_text_field = isinstance(ctrl, ft.TextField)
+    except Exception:
+        is_text_field = False
+    try:
         # 背景/表面
         for attr in _surface_attrs(ctrl):
             _apply_attr(ctrl, attr, SURFACE_MAP, is_dark,
@@ -212,8 +226,9 @@ def skin_control(ctrl, is_dark, visited=None, depth=0):
         # 边框
         for attr in ("border_color", "focused_border_color"):
             _apply_attr(ctrl, attr, BORDER_MAP, is_dark, False)
-        # 前景文字/图标
-        _apply_attr(ctrl, "color", FORECOLOR_MAP, is_dark, False)
+        # 前景文字/图标（TextField 未指定色时深色补浅色）
+        _apply_attr(ctrl, "color", FORECOLOR_MAP, is_dark, False,
+                    fill_none_foreground=is_text_field)
     except Exception:
         pass
     try:
@@ -286,12 +301,13 @@ def is_system_dark():
         if sys.platform.startswith("win"):
             try:
                 import subprocess
-                out = subprocess.run(
+                result = subprocess.run(
                     ["reg", "query",
-                     r"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+                     r"HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
                      "/v", "AppsUseLightTheme"],
-                    capture_output=True, text=True, timeout=2)
-                return "0x0" in (out.stdout or "")
+                    capture_output=True, timeout=2)
+                out = result.stdout.decode("gbk", errors="replace")
+                return "0x0" in out
             except Exception:
                 return False
     except Exception:

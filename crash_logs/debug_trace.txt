@@ -1,0 +1,150 @@
+[04:00:42] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[04:00:42] === APP process started ===
+[04:02:44] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[04:02:44] === APP process started ===
+[05:44:59] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[05:44:59] === APP process started ===
+[05:46:18] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[05:46:18] === APP process started ===
+[05:47:30] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[05:47:30] === APP process started ===
+[05:50:35] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[05:50:35] === APP process started ===
+[05:54:07] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[05:54:07] === APP process started ===
+[05:57:22] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[05:57:22] === APP process started ===
+[06:03:23] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[06:03:23] === APP process started ===
+[06:16:38] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[06:16:38] === APP process started ===
+[06:27:42] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[06:27:42] === APP process started ===
+[06:29:45] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[06:29:45] === APP process started ===
+[06:35:23] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[06:35:23] === APP process started ===
+[06:45:42] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[06:45:42] === APP process started ===
+[06:47:13] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[06:47:13] === APP process started ===
+[06:47:57] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[06:47:57] === APP process started ===
+[06:48:45] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[06:48:45] === APP process started ===
+[06:49:19] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[06:49:19] === APP process started ===
+[06:50:40] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[06:50:40] === APP process started ===
+[06:50:59] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[06:50:59] === APP process started ===
+[06:51:32] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[06:51:32] === APP process started ===
+[16:52:29] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[16:52:29] === APP process started ===
+[16:59:49] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[16:59:49] === APP process started ===
+[17:06:30] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[17:06:30] === APP process started ===
+[17:08:09] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[17:08:09] === APP process started ===
+[17:10:25] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[17:10:25] === APP process started ===
+[17:14:00] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[17:14:00] === APP process started ===
+[17:15:59] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[17:15:59] === APP process started ===
+[17:16:55] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[17:16:56] === APP process started ===
+[17:22:04] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[17:22:04] === APP process started ===
+[17:54:05] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[17:54:05] === APP process started ===
+[17:54:52] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[17:54:52] === APP process started ===
+[17:56:54] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[17:56:54] === APP process started ===
+[18:17:40] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[18:17:40] === APP process started ===
+[18:19:39] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[18:19:39] === APP process started ===
+[18:20:46] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[18:20:46] === APP process started ===
+[18:25:02] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[18:25:02] === APP process started ===
+[18:26:03] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[18:26:03] === APP process started ===
+[18:26:49] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[18:26:49] === APP process started ===
+[18:29:34] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[18:29:34] === APP process started ===
+[18:30:33] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[18:30:33] === APP process started ===
+[18:31:19] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[18:31:19] === APP process started ===
+[00:43:47] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[00:43:47] === APP process started ===
+[00:44:35] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[00:44:35] === APP process started ===
+[00:58:10] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[00:58:10] === APP process started ===
+[00:58:56] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[00:58:56] === APP process started ===
+[00:59:59] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[00:59:59] === APP process started ===
+[17:14:54] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[17:14:54] === APP process started ===
+[17:18:06] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[17:18:06] === APP process started ===
+[17:19:38] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[17:19:38] === APP process started ===

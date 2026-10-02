@@ -92,6 +92,34 @@ def apply_compat() -> None:
         else:
             _log("transform: WARNING - no Offset class found")
 
+    # ===== ElevatedButton：Flet 1.0 起改名为 Button，补回旧名别名 =====
+    # 代码中文字均以第一个位置参数(content)传入，icon/bgcolor/color/expand/
+    # height/on_click 等参数两版一致，可直接别名；打 APK 的 0.86.5 原生有此类。
+    if not hasattr(ft, "ElevatedButton"):
+        if hasattr(ft, "Button"):
+            ft.ElevatedButton = ft.Button
+            _log("ElevatedButton: patched (alias of ft.Button)")
+        else:
+            _log("ElevatedButton: WARNING - ft.Button not found")
+    else:
+        _log("ElevatedButton: OK (native)")
+
+    # ===== Positioned：Flet 1.0 移除该类，子控件改由自身 left/top/right/bottom
+    # 定位。补一个跨版本工厂：新版把定位属性设到 content 并返回控件本身（直接放进
+    # Stack.controls），旧版(0.86.5 打 APK)使用原生 Positioned。 =====
+    if not hasattr(ft, "Positioned"):
+        def _Positioned(left=None, top=None, right=None, bottom=None,
+                        content=None, **_kw):
+            for _k, _v in (("left", left), ("top", top),
+                           ("right", right), ("bottom", bottom)):
+                if _v is not None and hasattr(content, _k):
+                    setattr(content, _k, _v)
+            return content
+        ft.Positioned = _Positioned
+        _log("Positioned: patched (factory sets control's left/top/right/bottom)")
+    else:
+        _log("Positioned: OK (native)")
+
     # ===== Page.show_dialog / pop_dialog 猴子补丁 =====
     if not hasattr(ft.Page, "show_dialog"):
         def _show_dialog(self, dialog):

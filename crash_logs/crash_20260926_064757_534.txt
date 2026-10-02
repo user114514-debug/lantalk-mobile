@@ -1,0 +1,131 @@
+======================================================================
+  LanTalk 移动端崩溃日志
+======================================================================
+
+----------------------------------------------------------------------
+  基本信息
+----------------------------------------------------------------------
+  崩溃时间:   2026-09-26 06:47:57.534
+  应用名称:   LanTalk
+  应用版本:   v3.7.2
+  崩溃线程:   MainThread
+  系统:       Windows 11 (AMD64)
+  Python版本: 3.14.7
+  可执行文件: C:\Users\Admin\AppData\Local\Doubao\User Data\sandbox_runtime\bases\c98c5042338ed152c6f10ecd8591889f\python\python.exe
+  工作目录:   E:\py\N\ipv6\LanTalk_v11_ipv6_fix\LanTalk_mobile_clean
+
+----------------------------------------------------------------------
+  异常信息
+----------------------------------------------------------------------
+  异常类型: builtins.AttributeError
+  异常消息: 'Icon' object has no attribute 'name'
+
+----------------------------------------------------------------------
+  完整堆栈跟踪
+----------------------------------------------------------------------
+  Traceback (most recent call last):
+    File "E:\py\N\ipv6\LanTalk_v11_ipv6_fix\LanTalk_mobile_clean\test_ui_smoke.py", line 282, in <module>
+      asyncio.run(run_test())
+      ~~~~~~~~~~~^^^^^^^^^^^^
+    File "C:\Users\Admin\AppData\Local\Doubao\User Data\sandbox_runtime\bases\c98c5042338ed152c6f10ecd8591889f\python\Lib\asyncio\runners.py", line 205, in run
+      return runner.run(main)
+             ~~~~~~~~~~^^^^^^
+    File "C:\Users\Admin\AppData\Local\Doubao\User Data\sandbox_runtime\bases\c98c5042338ed152c6f10ecd8591889f\python\Lib\asyncio\runners.py", line 128, in run
+      return self._loop.run_until_complete(task)
+             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+    File "C:\Users\Admin\AppData\Local\Doubao\User Data\sandbox_runtime\bases\c98c5042338ed152c6f10ecd8591889f\python\Lib\asyncio\base_events.py", line 720, in run_until_complete
+      return future.result()
+             ~~~~~~~~~~~~~^^
+    File "E:\py\N\ipv6\LanTalk_v11_ipv6_fix\LanTalk_mobile_clean\test_ui_smoke.py", line 223, in run_test
+      assert app._drawer_handle.content.name == ft.icons.CHEVRON_LEFT, \
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  AttributeError: 'Icon' object has no attribute 'name'
+
+----------------------------------------------------------------------
+  异常代码位置详情（从外到内）
+----------------------------------------------------------------------
+
+  [1] 函数: <module>
+      文件: E:\py\N\ipv6\LanTalk_v11_ipv6_fix\LanTalk_mobile_clean\test_ui_smoke.py
+      行号: 第 282 行
+      代码对象: <module> (定义于第 1 行)
+      出错代码: asyncio.run(run_test())
+      局部变量:
+        asyncio = <module 'asyncio' from 'C:\\Users\\Admin\\AppData\\Local\\Doubao\\User Data\\sandbox_runtime\\bases\\c98c5042338ed152c6f10ecd8591889f\\python\\Lib\\asyncio\\__init__.py'>
+        sys = <module 'sys' (built-in)>
+        MagicMock = <class 'unittest.mock.MagicMock'>
+        ft = <module 'flet' from 'C:\\Users\\Admin\\AppData\\Local\\Doubao\\User Data\\sandbox_runtime\\bases\\c98c5042338ed152c6f10ecd8591889f\\python\\Lib\\site-packages\\flet\\__init__.py'>
+        mobile_main = <module 'mobile_main' from 'E:\\py\\N\\ipv6\\LanTalk_v11_ipv6_fix\\LanTalk_mobile_clean\\mobile_main.py'>
+        MobileChatApp = <class 'mobile_main.MobileChatApp'>
+        BUTTON_MARK = 'Button'
+        BLUE_BLACKLIST = {'#1e90ff', '#2563eb', '#3b82f6', '#5e5ce6', '#bf5af2', '#4285f4', '#06b6d4', '#2196f3', '#0891b2', '#0a84ff', '#007aff'}
+        GREEN_TOKENS = ('#34c759', '#30d158')
+        MockPage = <class '__main__.MockPage'>
+        children = <function children at 0x000002A3EDC37950>
+        walk = <function walk at 0x000002A3F10FA560>
+        current_controls = <function current_controls at 0x000002A3F10FA610>
+        _container_has_icon = <function _container_has_icon at 0x000002A3F10FA6C0>
+        ... 还有 5 个变量
+
+  [2] 函数: run
+      文件: C:\Users\Admin\AppData\Local\Doubao\User Data\sandbox_runtime\bases\c98c5042338ed152c6f10ecd8591889f\python\Lib\asyncio\runners.py
+      行号: 第 205 行
+      代码对象: run (定义于第 170 行)
+      出错代码: return runner.run(main)
+      局部变量:
+        main = <coroutine object run_test at 0x000002A3F033D300>
+        debug = None
+        loop_factory = None
+        runner = <asyncio.runners.Runner object at 0x000002A3F0FA3770>
+
+  [3] 函数: run
+      文件: C:\Users\Admin\AppData\Local\Doubao\User Data\sandbox_runtime\bases\c98c5042338ed152c6f10ecd8591889f\python\Lib\asyncio\runners.py
+      行号: 第 128 行
+      代码对象: run (定义于第 88 行)
+      出错代码: return self._loop.run_until_complete(task)
+      局部变量:
+        self = <asyncio.runners.Runner object at 0x000002A3F0FA3770>
+        coro = <coroutine object run_test at 0x000002A3F033D300>
+        context = <_contextvars.Context object at 0x000002A3F1012440>
+        task = <Task finished name='Task-1' coro=<run_test() done, defined at E:\py\N\ipv6\LanTalk_v11_ipv6_fix\LanTalk_mobile_clean\test_ui_smoke.py:163> exception=AttributeError("'Icon' object has no attribute 'na...(截断)
+        sigint_handler = functools.partial(<bound method Runner._on_sigint of <asyncio.runners.Runner object at 0x000002A3F0FA3770>>, main_task=<Task finished name='Task-1' coro=<run_test() done, defined at E:\py\N\ipv6\LanTa...(截断)
+
+  [4] 函数: run_until_complete
+      文件: C:\Users\Admin\AppData\Local\Doubao\User Data\sandbox_runtime\bases\c98c5042338ed152c6f10ecd8591889f\python\Lib\asyncio\base_events.py
+      行号: 第 720 行
+      代码对象: run_until_complete (定义于第 684 行)
+      出错代码: return future.result()
+      局部变量:
+        self = <ProactorEventLoop running=False closed=True debug=False>
+        future = <Task finished name='Task-1' coro=<run_test() done, defined at E:\py\N\ipv6\LanTalk_v11_ipv6_fix\LanTalk_mobile_clean\test_ui_smoke.py:163> exception=AttributeError("'Icon' object has no attribute 'na...(截断)
+        new_task = False
+
+  [5] 函数: run_test
+      文件: E:\py\N\ipv6\LanTalk_v11_ipv6_fix\LanTalk_mobile_clean\test_ui_smoke.py
+      行号: 第 223 行
+      代码对象: run_test (定义于第 163 行)
+      出错代码: assert app._drawer_handle.content.name == ft.icons.CHEVRON_LEFT, \
+      局部变量:
+        loop = <ProactorEventLoop running=False closed=True debug=False>
+        page = <__main__.MockPage object at 0x000002A3F10DC050>
+        n = 6
+        stack = Stack(_i=42, _c='Stack', data=None, key=None, expand=True, expand_loose=False, col=12, opacity=1.0, tooltip=None, badge=None, visible=True, disabled=False, rtl=False, adaptive=None, width=None, height...(截断)
+        NATIVE_POS = False
+        drawer = Container(_i=25, _c='Container', data=None, key=None, expand=None, expand_loose=False, col=12, opacity=1.0, tooltip=None, badge=None, visible=True, disabled=False, rtl=False, action=None, adaptive=Non...(截断)
+        ox = 11.73
+        oy = 0
+        app = <mobile_main.MobileChatApp object at 0x000002A3F0FA3CB0>
+        mask = Container(_i=26, _c='Container', data=None, key=None, expand=None, expand_loose=False, col=12, opacity=1.0, tooltip=None, badge=None, visible=True, disabled=False, rtl=False, action=None, adaptive=Non...(截断)
+
+----------------------------------------------------------------------
+  当前运行线程
+----------------------------------------------------------------------
+  - MainThread (ID: 6804, 运行中, 普通线程)
+  - Thread-1 (_heartbeat_loop) (ID: 11536, 运行中, 守护线程)
+  - Thread-2 (_net_ui_refresh_loop) (ID: 24568, 运行中, 守护线程)
+  - Thread-3 (ID: 27244, 运行中, 守护线程)
+  - ConnWatchdog (ID: 25460, 运行中, 守护线程)
+
+======================================================================
+  日志结束 — 生成时间: 2026-09-26 06:47:57
+======================================================================

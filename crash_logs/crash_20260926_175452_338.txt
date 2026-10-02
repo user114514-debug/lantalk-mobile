@@ -1,0 +1,67 @@
+======================================================================
+  LanTalk 移动端崩溃日志
+======================================================================
+
+----------------------------------------------------------------------
+  基本信息
+----------------------------------------------------------------------
+  崩溃时间:   2026-09-26 17:54:52.338
+  应用名称:   LanTalk
+  应用版本:   v3.7.2
+  崩溃线程:   MainThread
+  系统:       Windows 11 (AMD64)
+  Python版本: 3.14.7
+  可执行文件: C:\Users\Admin\AppData\Local\Doubao\User Data\sandbox_runtime\bases\c98c5042338ed152c6f10ecd8591889f\python\python.exe
+  工作目录:   E:\py\N\ipv6\LanTalk_v11_ipv6_fix\LanTalk_mobile_clean
+
+----------------------------------------------------------------------
+  异常信息
+----------------------------------------------------------------------
+  异常类型: builtins.AttributeError
+  异常消息: module 'flet' has no attribute 'app'
+
+----------------------------------------------------------------------
+  完整堆栈跟踪
+----------------------------------------------------------------------
+  Traceback (most recent call last):
+    File "E:\py\N\ipv6\LanTalk_v11_ipv6_fix\LanTalk_mobile_clean\_emoji_render_test.py", line 24, in <module>
+      ft.app(target=main)
+      ^^^^^^
+    File "C:\Users\Admin\AppData\Local\Doubao\User Data\sandbox_runtime\bases\c98c5042338ed152c6f10ecd8591889f\python\Lib\site-packages\flet\__init__.py", line 1818, in __getattr__
+      raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+  AttributeError: module 'flet' has no attribute 'app'
+
+----------------------------------------------------------------------
+  异常代码位置详情（从外到内）
+----------------------------------------------------------------------
+
+  [1] 函数: <module>
+      文件: E:\py\N\ipv6\LanTalk_v11_ipv6_fix\LanTalk_mobile_clean\_emoji_render_test.py
+      行号: 第 24 行
+      代码对象: <module> (定义于第 1 行)
+      出错代码: ft.app(target=main)
+      局部变量:
+        os = <module 'os' (frozen)>
+        sys = <module 'sys' (built-in)>
+        threading = <module 'threading' from 'C:\\Users\\Admin\\AppData\\Local\\Doubao\\User Data\\sandbox_runtime\\bases\\c98c5042338ed152c6f10ecd8591889f\\python\\Lib\\threading.py'>
+        ft = <module 'flet' from 'C:\\Users\\Admin\\AppData\\Local\\Doubao\\User Data\\sandbox_runtime\\bases\\c98c5042338ed152c6f10ecd8591889f\\python\\Lib\\site-packages\\flet\\__init__.py'>
+        MobileChatApp = <class 'mobile_main.MobileChatApp'>
+        main = <function main at 0x00000264AF497C10>
+
+  [2] 函数: __getattr__
+      文件: C:\Users\Admin\AppData\Local\Doubao\User Data\sandbox_runtime\bases\c98c5042338ed152c6f10ecd8591889f\python\Lib\site-packages\flet\__init__.py
+      行号: 第 1818 行
+      代码对象: __getattr__ (定义于第 1815 行)
+      出错代码: raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+      局部变量:
+        name = 'app'
+        module_path = None
+
+----------------------------------------------------------------------
+  当前运行线程
+----------------------------------------------------------------------
+  - MainThread (ID: 22644, 运行中, 普通线程)
+
+======================================================================
+  日志结束 — 生成时间: 2026-09-26 17:54:52
+======================================================================

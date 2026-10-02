@@ -197,12 +197,12 @@ class CrashDialogManager:
             self._showing = False
             self._mark_read(log_path)
 
-        def do_copy(e=None):
+        async def do_copy(e=None):
             try:
                 text = self._read_text(log_path)
                 clip = getattr(page, "clipboard", None)
                 if clip is not None:
-                    clip.set(text)
+                    await clip.set(text)
                 tip.value = "已复制完整日志到剪贴板"
                 page.update()
             except Exception as ex:

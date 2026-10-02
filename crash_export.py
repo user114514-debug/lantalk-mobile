@@ -154,7 +154,6 @@ def build_export_button(app):
 
     return ft.ElevatedButton(
         "导出崩溃日志",
-        expand=True,
         height=44,
         icon=ft.icons.BUG_REPORT,
         on_click=_on_export,

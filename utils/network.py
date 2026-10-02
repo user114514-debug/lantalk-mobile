@@ -69,15 +69,19 @@ def get_all_ipv6():
         pass
 
     # 方法4：系统命令回退（Windows ipconfig / Linux ip -6 addr）
+    # 注意：不能用 text=True —— 中文 Windows 的 ipconfig 输出是 GBK，
+    # Python 3.14 下 text 模式默认按 UTF-8 解码会抛 UnicodeDecodeError
+    # （与 dark_theme reg query 同一类崩溃，见 crash_20260926_040508）。
+    # 统一用字节模式捕获，再按平台编码宽松解码。
     try:
         import subprocess
         import re
         if sys.platform == "win32":
-            result = subprocess.run(["ipconfig"], capture_output=True, text=True, timeout=5)
-            output = result.stdout
+            result = subprocess.run(["ipconfig"], capture_output=True, timeout=5)
+            output = result.stdout.decode("gbk", errors="replace")
         else:
-            result = subprocess.run(["ip", "-6", "addr"], capture_output=True, text=True, timeout=5)
-            output = result.stdout
+            result = subprocess.run(["ip", "-6", "addr"], capture_output=True, timeout=5)
+            output = result.stdout.decode("utf-8", errors="replace")
         # 匹配IPv6地址
         ipv6_pattern = r'([0-9a-fA-F:]+:+[0-9a-fA-F:]+)'
         matches = re.findall(ipv6_pattern, output)

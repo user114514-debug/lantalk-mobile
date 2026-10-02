@@ -104,6 +104,7 @@ from client.client import ChatClient
 from client.message import recv_action
 from client.config import load_server_config, save_server_config, load_ip_mode, save_ip_mode, load_language, save_language
 from utils.network import get_local_ipv4, get_local_ipv6, get_all_ipv6
+from utils.emoji_flags import has_flag, iter_segments, tokenize_text
 from client.ui.models import ChatMessage, FileMessage
 from client.ui.file_transfer import FileTransferClient
 from client.ui.voice_udp import (
@@ -113,6 +114,66 @@ from client.ui.voice_udp import (
 )
 
 VERSION = "v3.7.2"
+
+
+class MessageContent(ft.Container):
+    """
+    消息正文控件：对外暴露 .value（与 ft.Text 一致，供打字机/流式更新使用）。
+    - 不含国旗：渲染单个 ft.Text（可选中、自动换行，Twemoji 回退渲染普通 emoji）。
+    - 含国旗：Skia 无法用字体组合 regional-indicator 国旗，改用 Row(wrap=True)
+      做“文字 + 国旗 PNG”的流式图文混排。
+    """
+
+    def __init__(self, text, *, color, width=260, size=16, selectable=True,
+                 emoji_family="Twemoji", flag_height=19):
+        super().__init__(width=width)
+        self._text = text or ""
+        self._color = color
+        self._size = size
+        self._selectable = selectable
+        self._emoji_family = emoji_family
+        self._flag_height = flag_height
+        self._rebuild()
+
+    @property
+    def value(self):
+        return self._text
+
+    @value.setter
+    def value(self, v):
+        v = v or ""
+        if v == self._text:
+            return
+        self._text = v
+        self._rebuild()
+
+    def _plain_text(self, s):
+        return ft.Text(
+            s, size=self._size, selectable=self._selectable, color=self._color,
+            width=self.width, font_family_fallback=[self._emoji_family])
+
+    def _rebuild(self):
+        if not has_flag(self._text):
+            self.content = self._plain_text(self._text)
+            return
+        controls = []
+        for kind, val in iter_segments(self._text):
+            if kind == "flag":
+                controls.append(ft.Image(
+                    src=f"flags/{val.lower()}.png",
+                    height=self._flag_height, fit=ft.BoxFit.CONTAIN))
+            else:
+                for tok in tokenize_text(val):
+                    if tok == "\n":
+                        # Row 无法硬换行：放一个占满整行的零高容器，把后续挤到下一行。
+                        controls.append(ft.Container(width=self.width, height=0))
+                    else:
+                        controls.append(ft.Text(
+                            tok, size=self._size, color=self._color,
+                            font_family_fallback=[self._emoji_family]))
+        self.content = ft.Row(
+            controls=controls, wrap=True, spacing=0, run_spacing=3,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
 
 class MobileChatApp:
@@ -216,6 +277,31 @@ class MobileChatApp:
                 json.dump({"theme_mode": mode}, f, ensure_ascii=False, indent=2)
         except Exception as e:
             self._log(f"save theme config failed: {e}")
+
+    # 打包的彩色 emoji 字体族（声明见 pyproject.toml 的 [[tool.flet.fonts]]，
+    # 文件 assets/fonts/Twemoji.ttf，COLRv0：含全部国旗、新 emoji、ZWJ 组合表情）
+    EMOJI_FONT_FAMILY = "Twemoji"
+
+    def _build_theme(self, is_dark=False):
+        """全局主题：绿色主色 + 全部 TextTheme 样式【显式文字色】(否则无颜色
+        文字会被 Flutter 渲成白色，浅色模式下白字浅底不可见) + emoji 回退。
+        浅色/深色各一套，分别挂到 page.theme / page.dark_theme。"""
+        try:
+            _fg = "#F2F2F7" if is_dark else "#1C1C1E"
+            def _ts():
+                # 每个字段使用独立实例，避免同一控件被挂到多个父节点
+                return ft.TextStyle(color=_fg, font_family_fallback=[self.EMOJI_FONT_FAMILY])
+            text_theme = ft.TextTheme(
+                body_large=_ts(), body_medium=_ts(), body_small=_ts(),
+                label_large=_ts(), label_medium=_ts(), label_small=_ts(),
+                title_large=_ts(), title_medium=_ts(), title_small=_ts(),
+                headline_large=_ts(), headline_medium=_ts(), headline_small=_ts(),
+                display_large=_ts(), display_medium=_ts(), display_small=_ts(),
+            )
+            return ft.Theme(color_scheme_seed=ft.Colors.GREEN_700, text_theme=text_theme)
+        except Exception:
+            # 旧版本不支持 text_theme/fallback 时退回无回退主题，保证可启动
+            return ft.Theme(color_scheme_seed=ft.Colors.GREEN_700)
 
     def _apply_theme_mode(self, mode):
         self._theme_mode = mode
@@ -356,6 +442,7 @@ class MobileChatApp:
     # ==================== 页面入口 ====================
     async def setup(self, page):
         self.page = page
+        page._lt_app = self
         self._loop = asyncio.get_running_loop()
         set_lang(load_language())  # 启动时应用上次选择的界面语言
         page.title = "LanTalk Mobile"
@@ -366,9 +453,10 @@ class MobileChatApp:
             page.window.height = 800
         except Exception:
             pass
-        # 全局主题：BLUE_700主色，SYSTEM跟随系统
+        # 全局主题：GREEN_700主色，SYSTEM跟随系统
         try:
-            page.theme = ft.Theme(color_scheme_seed=ft.Colors.BLUE_700)
+            page.theme = self._build_theme(False)
+            page.dark_theme = self._build_theme(True)
             self._load_theme_config()
             self._apply_theme_mode(self._theme_mode)
         except Exception:
@@ -481,7 +569,7 @@ class MobileChatApp:
             is_active = (current_mode == mode)
             btn = ft.ElevatedButton(
                 label, expand=True, height=44,
-                bgcolor=ft.Colors.BLUE_600 if is_active else None,
+                bgcolor=ft.Colors.GREEN_600 if is_active else None,
                 color=ft.Colors.WHITE if is_active else None,
                 on_click=lambda e, m=mode: self._on_ip_mode_change(m),
             )
@@ -507,7 +595,7 @@ class MobileChatApp:
                     try:
                         btn_mode = btn.data.replace("ip_mode_", "")
                         is_active = (btn_mode == mode)
-                        btn.bgcolor = ft.Colors.BLUE_600 if is_active else None
+                        btn.bgcolor = ft.Colors.GREEN_600 if is_active else None
                         btn.color = ft.Colors.WHITE if is_active else None
                     except Exception:
                         pass
@@ -530,25 +618,25 @@ class MobileChatApp:
                 self._splash_skipped = True
                 await self.show_login()
 
-        # iOS 风格蓝紫渐变
+        # 纯白背景
         _splash_gradient = ft.LinearGradient(
             begin=ft.alignment.top_center, end=ft.alignment.bottom_center,
-            colors=["#0A84FF", "#5E5CE6", "#BF5AF2"])
+            colors=["#FFFFFF", "#FFFFFF"])
 
-        # Logo：白色聊天气泡图标 + 蓝色渐变圆背景
+        # Logo：白色聊天气泡图标 + 白色渐变圆背景
         logo_icon = ft.Container(
             content=ft.Icon(ft.icons.CHAT_BUBBLE, size=48, color=ft.Colors.WHITE),
             width=96, height=96, border_radius=28,
             gradient=ft.LinearGradient(begin=ft.alignment.top_left, end=ft.alignment.bottom_right,
-                                        colors=["#FFFFFF", "#E8E8ED"]),
+                                        colors=["#F5F5F7", "#E8E8ED"]),
             alignment=ft.alignment.center,
         )
-        # 用蓝色图标代替白色（在白底上更清晰）
-        logo_icon.content = ft.Icon(ft.icons.CHAT_BUBBLE, size=48, color="#0A84FF")
+        # 绿色图标（在白色圆角方块背景上）
+        logo_icon.content = ft.Icon(ft.icons.CHAT_BUBBLE, size=48, color="#34C759")
 
-        title = ft.Text("LanTalk", size=36, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE)
-        subtitle = ft.Text(t("局域网聊天"), size=15, color=ft.Colors.with_opacity(0.8, ft.Colors.WHITE))
-        skip_hint = ft.Text(t("点击任意位置进入"), size=13, color=ft.Colors.with_opacity(0.6, ft.Colors.WHITE))
+        title = ft.Text("LanTalk", size=36, weight=ft.FontWeight.BOLD, color="#34C759")
+        subtitle = ft.Text(t("局域网聊天"), size=15, color=ft.Colors.with_opacity(0.6, "#666666"))
+        skip_hint = ft.Text(t("点击任意位置进入"), size=13, color=ft.Colors.with_opacity(0.4, "#999999"))
 
         splash_content = ft.Container(
             content=ft.Column(controls=[
@@ -583,21 +671,18 @@ class MobileChatApp:
 
     async def show_login(self):
         host, port = load_server_config()
-        # iOS 风格：蓝紫渐变背景
-        _ios_gradient = ft.LinearGradient(
-            begin=ft.alignment.top_center,
-            end=ft.alignment.bottom_center,
-            colors=["#0A84FF", "#5E5CE6", "#BF5AF2"],
-        )
+        # 纯白背景
+        _ios_gradient = None
 
         # 输入框统一 iOS 风格：圆角、浮动标签、无下划线
         def _ios_field(**kwargs):
             defaults = dict(
                 expand=True, height=50, border_radius=14,
                 border_color=ft.Colors.with_opacity(0.2, ft.Colors.GREY_400),
-                focused_border_color="#0A84FF",
+                focused_border_color="#34C759",
                 filled=True, fill_color=ft.Colors.with_opacity(0.6, ft.Colors.WHITE),
                 text_size=15, content_padding=ft.padding.symmetric(horizontal=14, vertical=8),
+                color=ft.Colors.GREY_900,
             )
             defaults.update(kwargs)
             return ft.TextField(**defaults)
@@ -608,20 +693,20 @@ class MobileChatApp:
         user_field = _ios_field(label=t("昵称"), hint_text=t("请输入昵称"))
         pwd_field = _ios_field(label=t("密码"), hint_text=t("可留空"), password=True)
         err_text = ft.Text("", size=14, color=ft.Colors.RED_400, text_align=ft.TextAlign.CENTER)
-        status_text = ft.Text("", size=14, color=ft.Colors.with_opacity(0.7, ft.Colors.WHITE), text_align=ft.TextAlign.CENTER)
+        status_text = ft.Text("", size=14, color=ft.Colors.GREY_600, text_align=ft.TextAlign.CENTER)
 
-        # iOS 风格按钮：蓝色渐变填充 + 大圆角
+        # iOS 风格按钮：绿色渐变填充 + 大圆角
         login_btn = ft.Container(
             content=ft.Text(t("登 录"), size=16, weight=ft.FontWeight.W_600, color=ft.Colors.WHITE),
             alignment=ft.alignment.center, height=52, border_radius=16, expand=True,
             gradient=ft.LinearGradient(begin=ft.alignment.center_left, end=ft.alignment.center_right,
-                                        colors=["#0A84FF", "#5E5CE6"]),
+                                        colors=["#34C759", "#30D158"]),
             animate_scale=ft.Animation(150, ft.AnimationCurve.EASE_OUT),
         )
         reg_btn = ft.Container(
-            content=ft.Text(t("注 册"), size=16, weight=ft.FontWeight.W_600, color="#0A84FF"),
+            content=ft.Text(t("注 册"), size=16, weight=ft.FontWeight.W_600, color="#34C759"),
             alignment=ft.alignment.center, height=52, border_radius=16, expand=True,
-            bgcolor=ft.Colors.with_opacity(0.85, ft.Colors.WHITE),
+            bgcolor=ft.Colors.GREY_100,
             animate_scale=ft.Animation(150, ft.AnimationCurve.EASE_OUT),
         )
         self._login_err = err_text
@@ -736,23 +821,23 @@ class MobileChatApp:
                 ft.Row(controls=[login_btn, reg_btn], spacing=10),
             ], spacing=10, horizontal_alignment=ft.CrossAxisAlignment.STRETCH),
             padding=ft.padding.all(18), border_radius=24,
-            bgcolor=ft.Colors.with_opacity(0.82, ft.Colors.WHITE),
+            bgcolor=ft.Colors.with_opacity(0.95, ft.Colors.GREY_50),
             margin=ft.margin.symmetric(horizontal=16),
         )
 
         root = ft.Container(
             content=ft.Column(controls=[
                 ft.Container(height=20),
-                ft.Icon(ft.icons.CHAT_BUBBLE, size=56, color=ft.Colors.WHITE),
-                ft.Text("LanTalk", size=30, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE),
+                ft.Icon(ft.icons.CHAT_BUBBLE, size=56, color="#34C759"),
+                ft.Text("LanTalk", size=30, weight=ft.FontWeight.BOLD, color=ft.Colors.BLACK87),
                 ft.Text(t("移动端 {VERSION}").format(VERSION=VERSION), size=13,
-                        color=ft.Colors.with_opacity(0.7, ft.Colors.WHITE)),
+                        color=ft.Colors.GREY_500),
                 ft.Container(height=16),
                 glass_card,
                 ft.Container(height=20),
             ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=4,
                alignment=ft.MainAxisAlignment.START, scroll=ft.ScrollMode.AUTO),
-            padding=ft.padding.only(top=10, bottom=10), expand=True, gradient=_ios_gradient,
+            padding=ft.padding.only(top=10, bottom=10), expand=True, bgcolor=ft.Colors.WHITE,
         )
         await self._mount_with_fade(root)
 
@@ -824,13 +909,13 @@ class MobileChatApp:
         self._ui(_set)
 
     # ==================== 主界面（聊天） ====================
-    async def show_chat(self):
+    async def show_chat(self, direction="right"):
         # iOS 风格颜色
         _ios_bg = "#F2F2F7"
         _ios_glass = ft.Colors.with_opacity(0.85, ft.Colors.WHITE)
         _ios_gradient = ft.LinearGradient(
             begin=ft.alignment.center_left, end=ft.alignment.center_right,
-            colors=["#0A84FF", "#5E5CE6"])
+            colors=["#34C759", "#30D158"])
 
         # 按钮点击缩放包装
         def _tap_scale(btn, handler):
@@ -849,13 +934,13 @@ class MobileChatApp:
 
         # 顶部状态栏（毛玻璃）
         self._net_text = ft.Text(t("延迟 --ms  丢包 --%"), size=13, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS, color=ft.Colors.with_opacity(0.6, ft.Colors.GREY_800))
-        self._nick_text = ft.Text(self.client.username or "", size=15, weight=ft.FontWeight.W_600, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS, text_align=ft.TextAlign.RIGHT, expand=True)
+        self._nick_text = ft.Text(self.client.username or "", size=15, weight=ft.FontWeight.W_600, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS, text_align=ft.TextAlign.RIGHT, expand=True, color=ft.Colors.GREY_900)
         settings_btn = ft.Container(
-            content=ft.Icon(ft.icons.SETTINGS, size=20, color="#0A84FF"),
+            content=ft.Icon(ft.icons.SETTINGS, size=20, color="#34C759"),
             width=36, height=36, border_radius=18, alignment=ft.alignment.center,
             animate_scale=ft.Animation(150, ft.AnimationCurve.EASE_OUT),
         )
-        settings_btn.on_click = _tap_scale(settings_btn, self._open_settings)
+        settings_btn.on_click = _tap_scale(settings_btn, lambda e: self._ui(self.show_settings()))
         top_card = ft.Container(
             content=ft.Row(controls=[ft.Container(content=self._net_text, expand=1),
                                       ft.Container(content=self._nick_text, expand=1, alignment=ft.alignment.center_right, margin=ft.margin.symmetric(horizontal=6)),
@@ -866,23 +951,57 @@ class MobileChatApp:
             margin=ft.margin.symmetric(horizontal=10, vertical=6),
         )
 
-        # 在线设备列表（毛玻璃卡片）
+        # 好友列表（左侧抽屉）
         self._device_row = ft.Row(controls=[], wrap=True, spacing=6, run_spacing=6)
         add_friend_btn = ft.Container(
-            content=ft.Icon(ft.icons.PERSON_ADD, size=20, color="#0A84FF"),
+            content=ft.Icon(ft.icons.PERSON_ADD, size=20, color="#34C759"),
             width=36, height=36, border_radius=18, alignment=ft.alignment.center,
             animate_scale=ft.Animation(150, ft.AnimationCurve.EASE_OUT),
         )
         add_friend_btn.on_click = _tap_scale(add_friend_btn, self._open_add_friend)
-        device_card = ft.Container(
+
+        # 抽屉内容
+        self._drawer_open = False
+        drawer_content = ft.Container(
             content=ft.Column(controls=[
-                ft.Row(controls=[ft.Text(t("在线设备"), size=13, color=ft.Colors.with_opacity(0.5, ft.Colors.GREY_800)),
-                                  ft.Container(expand=True), add_friend_btn]),
-                self._device_row,
-            ], spacing=6),
-            padding=ft.padding.symmetric(horizontal=14, vertical=10),
-            border_radius=16, bgcolor=_ios_glass,
-            margin=ft.margin.symmetric(horizontal=10, vertical=4),
+                ft.Container(height=24),
+                ft.Container(content=ft.Row(controls=[
+                    ft.Text(t("好友列表"), size=20, weight=ft.FontWeight.W_600, color=ft.Colors.GREY_900),
+                    ft.Container(expand=True),
+                    add_friend_btn,
+                ]), padding=ft.padding.symmetric(horizontal=16)),
+                ft.Container(height=8),
+                ft.Container(content=ft.Text(t("在线"), size=13, color=ft.Colors.GREY_500),
+                             padding=ft.padding.symmetric(horizontal=16)),
+                ft.Container(content=self._device_row, padding=ft.padding.symmetric(horizontal=10)),
+                ft.Container(height=16),
+            ], spacing=0, scroll=ft.ScrollMode.AUTO),
+            width=280, bgcolor=ft.Colors.WHITE, visible=False,
+            offset=ft.transform.Offset(-1.05, 0),
+            animate_offset=ft.Animation(300, ft.AnimationCurve.EASE_OUT_CUBIC),
+        )
+        self._drawer_content = drawer_content
+
+        # 抽屉遮罩
+        self._drawer_mask = ft.Container(
+            bgcolor=ft.Colors.with_opacity(0.4, ft.Colors.BLACK),
+            opacity=0, visible=False,
+            animate_opacity=ft.Animation(250, ft.AnimationCurve.EASE_OUT),
+            on_click=lambda e: self._close_drawer(),
+        )
+
+        # 抽屉把手（左侧露出的小箭头；非定位控件，由 Stack.alignment 钉在
+        # 左缘垂直居中，只占 22x50 一小块 —— 绝不能用 top=0,bottom=0 拉成全高，
+        # 否则会形成一条贯穿全屏的透明命中区，挡住消息区左缘所有点击）
+        self._drawer_handle = ft.Container(
+            content=ft.Icon(ft.icons.CHEVRON_RIGHT, size=18, color="#34C759"),
+            width=22, height=50, bgcolor=ft.Colors.with_opacity(0.95, ft.Colors.WHITE),
+            border_radius=ft.BorderRadius(top_left=0, top_right=10, bottom_left=0, bottom_right=10),
+            alignment=ft.alignment.center,
+            offset=ft.transform.Offset(0, 0),
+            animate_offset=ft.Animation(300, ft.AnimationCurve.EASE_OUT_CUBIC),
+            on_click=lambda e: self._toggle_drawer(),
+            animate_opacity=ft.Animation(200, ft.AnimationCurve.EASE_OUT),
         )
 
         # 消息区（浅灰背景，无卡片边框）
@@ -894,14 +1013,15 @@ class MobileChatApp:
             expand=True, height=40, hint_text=t("输入消息..."),
             border_radius=20, filled=True,
             fill_color=ft.Colors.with_opacity(0.5, ft.Colors.GREY_100),
-            border_color=ft.Colors.TRANSPARENT, focused_border_color="#0A84FF",
+            border_color=ft.Colors.TRANSPARENT, focused_border_color="#34C759",
             content_padding=ft.padding.symmetric(horizontal=14, vertical=6), text_size=15,
+            color=ft.Colors.GREY_900,
             on_submit=lambda e: self._ui(self.send_message(self._input_field.value or "")))
-        file_btn = ft.Container(content=ft.Icon(ft.icons.ATTACH_FILE, size=22, color="#0A84FF"),
+        file_btn = ft.Container(content=ft.Icon(ft.icons.ATTACH_FILE, size=22, color="#34C759"),
                                  width=38, height=38, border_radius=19, alignment=ft.alignment.center,
                                  animate_scale=ft.Animation(150, ft.AnimationCurve.EASE_OUT))
         file_btn.on_click = _tap_scale(file_btn, self._pick_file)
-        voice_btn = ft.Container(content=ft.Icon(ft.icons.MIC, size=22, color="#0A84FF"),
+        voice_btn = ft.Container(content=ft.Icon(ft.icons.MIC, size=22, color="#34C759"),
                                   width=38, height=38, border_radius=19, alignment=ft.alignment.center,
                                   animate_scale=ft.Animation(150, ft.AnimationCurve.EASE_OUT))
         voice_btn.on_click = _tap_scale(voice_btn, self._start_voice)
@@ -919,11 +1039,27 @@ class MobileChatApp:
             margin=ft.margin.symmetric(horizontal=10, vertical=6),
         )
 
-        self._chat_root = ft.Container(
-            content=ft.Column(controls=[top_card, device_card, message_area, input_card], spacing=0, expand=True),
+        # 聊天主体（不含好友列表，好友列表在抽屉里）
+        chat_body = ft.Container(
+            content=ft.Column(controls=[top_card, message_area, input_card], spacing=0, expand=True),
             bgcolor=_ios_bg, expand=True, padding=ft.padding.only(top=4, bottom=4),
         )
-        await self._mount_with_fade(self._chat_root)
+
+        # Stack：聊天页面 + 遮罩 + 抽屉 + 把手
+        # - 遮罩用 Positioned 四边归零精确铺满全屏（关闭时 visible=False 不拦截）
+        # - 抽屉用 Positioned 限定全高、宽280，靠 content 自身 offset 滑入/滑出
+        # - 把手是非定位控件(22x50)，由 Stack.alignment 钉在左缘垂直居中，
+        #   不产生全高命中区；打开时平移到抽屉右缘作为“收起”箭头
+        self._chat_root = ft.Stack(
+            controls=[
+                chat_body,
+                ft.Positioned(left=0, top=0, right=0, bottom=0, content=self._drawer_mask),
+                ft.Positioned(left=0, top=0, bottom=0, width=280, content=drawer_content),
+                self._drawer_handle,
+            ],
+            alignment=ft.Alignment(-1, 0),
+            expand=True)
+        await self._mount_with_fade(self._chat_root, direction=direction)
 
         # 初始化
         self.file_transfer = FileTransferClient(self.client)
@@ -941,6 +1077,56 @@ class MobileChatApp:
         if self.voice_call and getattr(self.voice_call, "_running", False):
             self._ui(self._voice_rejoin_room())
         self._log(f"show_chat done, version={VERSION}")
+
+    def _toggle_drawer(self):
+        if getattr(self, "_drawer_open", False):
+            self._close_drawer()
+        else:
+            self._ui(self._open_drawer())
+
+    async def _open_drawer(self):
+        # 纯手动：不做任何超时自动收回，用户点右缘箭头或遮罩才关闭。
+        try:
+            self._drawer_open = True
+            # 第一步：先让抽屉和遮罩可见（抽屉仍在屏幕外，遮罩透明）
+            self._drawer_content.visible = True
+            self._drawer_mask.visible = True
+            self._drawer_mask.opacity = 0
+            self.page.update()
+            # 等待一帧渲染，确保抽屉先显示在屏幕外
+            await asyncio.sleep(0.05)
+            # 第二步：触发滑入动画 + 遮罩淡入 + 把手移动
+            self._drawer_content.offset = ft.transform.Offset(0, 0)
+            self._drawer_mask.opacity = 1
+            self._drawer_handle.offset = ft.transform.Offset(11.73, 0)
+            self._drawer_handle.content = ft.Icon(ft.icons.CHEVRON_LEFT, size=18, color="#34C759")
+            self.page.update()
+        except Exception as e:
+            self._log(f"open drawer error: {e}")
+
+    def _close_drawer(self):
+        try:
+            self._drawer_open = False
+            self._drawer_content.offset = ft.transform.Offset(-1.05, 0)
+            self._drawer_mask.opacity = 0
+            # 把手回到屏幕左缘，箭头朝右
+            self._drawer_handle.offset = ft.transform.Offset(0, 0)
+            self._drawer_handle.content = ft.Icon(ft.icons.CHEVRON_RIGHT, size=18, color="#34C759")
+            self.page.update()
+            # 动画结束后彻底隐藏遮罩与抽屉（双保险，确保不拦截点击）
+            def _hide_after_anim():
+                import time
+                time.sleep(0.35)
+                try:
+                    self._drawer_mask.visible = False
+                    self._drawer_content.visible = False
+                    self.page.update()
+                except Exception:
+                    pass
+            import threading
+            threading.Thread(target=_hide_after_anim, daemon=True).start()
+        except Exception as e:
+            self._log(f"close drawer error: {e}")
 
     # ==================== 消息渲染 ====================
     def _refresh_messages(self, conv_id):
@@ -1019,15 +1205,16 @@ class MobileChatApp:
     def _build_msg_bubble(self, m, fade_in=False, animate_in=False):
         """消息气泡：[时间|用户名]行 + 气泡Card。animate_in:别人消息入场动画。"""
         # iOS 风格消息气泡
-        msg_text = ft.Text("" if animate_in else m.text, size=16, selectable=True,
-                            color=ft.Colors.WHITE if m.is_self else ft.Colors.GREY_900,
-                            width=260)
+        msg_text = MessageContent("" if animate_in else m.text,
+                                   color=ft.Colors.WHITE if m.is_self else ft.Colors.GREY_900,
+                                   width=260, selectable=True,
+                                   emoji_family=self.EMOJI_FONT_FAMILY)
         if m.is_self:
             bubble_card = ft.Container(
                 content=ft.Container(content=msg_text, padding=ft.padding.symmetric(horizontal=14, vertical=9)),
                 border_radius=ft.BorderRadius(top_left=18, top_right=18, bottom_left=18, bottom_right=4),
                 gradient=ft.LinearGradient(begin=ft.alignment.center_left, end=ft.alignment.center_right,
-                                            colors=["#0A84FF", "#5E5CE6"]),
+                                            colors=["#34C759", "#30D158"]),
             )
         else:
             bubble_card = ft.Container(
@@ -1075,11 +1262,11 @@ class MobileChatApp:
             lines.append(t("已保存: {path}").format(path=m.download_path))
         bubble = ft.Container(
             content=ft.Column(controls=[
-                ft.Text(x, size=15, color=ft.Colors.BLUE_800 if i == 0 else ft.Colors.GREY_600)
+                ft.Text(x, size=15, color=ft.Colors.GREEN_800 if i == 0 else ft.Colors.GREY_600)
                 for i, x in enumerate(lines)
             ] + ([ft.ProgressBar(value=progress/100, width=200)] if m.status in ("uploading","downloading") and progress > 0 else []),
             spacing=2),
-            bgcolor=ft.Colors.BLUE_50, border_radius=10, padding=ft.padding.all(10),
+            bgcolor=ft.Colors.GREEN_50, border_radius=10, padding=ft.padding.all(10),
         )
         return ft.Row(controls=[bubble, ft.Container(expand=True)] if m.is_self else [ft.Container(expand=True), bubble],
                       alignment=ft.MainAxisAlignment.END if m.is_self else ft.MainAxisAlignment.START)
@@ -1090,11 +1277,11 @@ class MobileChatApp:
             self._ui(self.join_public_voice(m.room_id, m.host))
         return ft.Container(
             content=ft.Row(controls=[
-                ft.Icon(ft.icons.MIC, size=20, color=ft.Colors.BLUE_700),
-                ft.Text(t("🔊 {host} 发起了公共语音通话").format(host=m.host), size=16, color=ft.Colors.BLUE_700, expand=True),
+                ft.Icon(ft.icons.MIC, size=20, color=ft.Colors.GREEN_700),
+                ft.Text(t("🔊 {host} 发起了公共语音通话").format(host=m.host), size=16, color=ft.Colors.GREEN_700, expand=True),
                 ft.ElevatedButton(t("加入"), height=36, bgcolor=ft.Colors.GREEN_600, color=ft.Colors.WHITE, on_click=_join),
             ], spacing=8),
-            bgcolor=ft.Colors.BLUE_50, border_radius=10, padding=ft.padding.all(10),
+            bgcolor=ft.Colors.GREEN_50, border_radius=10, padding=ft.padding.all(10),
         )
 
     def _append_system(self, text):
@@ -1296,18 +1483,23 @@ class MobileChatApp:
     def _make_device_chip(self, name, conv_id, online, unread=0):
         color = ft.Colors.GREEN_700 if online else ft.Colors.GREY_600
         if conv_id == "public":
-            color = ft.Colors.BLUE_700
+            color = ft.Colors.GREEN_700
         is_current = (conv_id == self.current_conv)
         badge = ft.Text(f" {unread}", size=13, color=ft.Colors.WHITE) if unread > 0 else ft.Text("")
+        def _on_chip_click(e, cid=conv_id):
+            self._switch_conv(cid)
+            # 点击后自动关闭抽屉
+            if getattr(self, "_drawer_open", False):
+                self._close_drawer()
         return ft.Container(
             content=ft.Row(controls=[
                 ft.Container(width=8, height=8, bgcolor=color, border_radius=4),
                 ft.Text(name, size=16, color=ft.Colors.WHITE if is_current else ft.Colors.BLACK87),
                 badge,
             ], spacing=5),
-            bgcolor=ft.Colors.BLUE_500 if is_current else ft.Colors.GREY_200,
+            bgcolor=ft.Colors.GREEN_500 if is_current else ft.Colors.GREY_200,
             border_radius=16, padding=ft.padding.symmetric(horizontal=12, vertical=8),
-            on_click=lambda e, cid=conv_id: self._switch_conv(cid),
+            on_click=_on_chip_click,
         )
 
     def _switch_conv(self, conv_id):
@@ -1482,7 +1674,7 @@ class MobileChatApp:
         """发送文件弹窗（iOS 风格）：选择文件按钮 + 只读路径展示 + 发送按钮。"""
         _ios_gradient = ft.LinearGradient(
             begin=ft.alignment.center_left, end=ft.alignment.center_right,
-            colors=["#0A84FF", "#5E5CE6"])
+            colors=["#34C759", "#30D158"])
 
         path_display = ft.TextField(
             read_only=True, height=44, hint_text=t("未选择文件"),
@@ -1932,22 +2124,22 @@ class MobileChatApp:
         _ios_glass = ft.Colors.with_opacity(0.85, ft.Colors.WHITE)
         _ios_gradient = ft.LinearGradient(
             begin=ft.alignment.center_left, end=ft.alignment.center_right,
-            colors=["#0A84FF", "#5E5CE6"])
+            colors=["#34C759", "#30D158"])
         _red_gradient = ft.LinearGradient(
             begin=ft.alignment.top_center, end=ft.alignment.bottom_center,
             colors=["#FF453A", "#FF3B30"])
 
-        self._voice_target_text = ft.Text("", size=26, weight=ft.FontWeight.W_700, text_align=ft.TextAlign.CENTER)
+        self._voice_target_text = ft.Text("", size=26, weight=ft.FontWeight.W_700, text_align=ft.TextAlign.CENTER, color=ft.Colors.GREY_900)
         self._voice_status_text = ft.Text(t("正在连接..."), size=15, color=ft.Colors.ORANGE_500, text_align=ft.TextAlign.CENTER)
-        self._voice_duration_text = ft.Text("00:00", size=48, weight=ft.FontWeight.W_200, text_align=ft.TextAlign.CENTER)
+        self._voice_duration_text = ft.Text("00:00", size=48, weight=ft.FontWeight.W_200, text_align=ft.TextAlign.CENTER, color=ft.Colors.GREY_800)
         self._voice_loss_text = ft.Text(t("丢包率: 0.0%"), size=13, color=ft.Colors.with_opacity(0.5, ft.Colors.GREY_800), text_align=ft.TextAlign.CENTER)
 
         # iOS 风格按钮：图标+文字，毛玻璃背景
         def _ios_voice_btn(icon_name, label, on_click, width=140):
             btn = ft.Container(
                 content=ft.Column(controls=[
-                    ft.Icon(icon_name, size=24, color="#0A84FF"),
-                    ft.Text(label, size=13, color="#0A84FF", weight=ft.FontWeight.W_500),
+                    ft.Icon(icon_name, size=24, color="#34C759"),
+                    ft.Text(label, size=13, color="#34C759", weight=ft.FontWeight.W_500),
                 ], spacing=4, horizontal_alignment=ft.CrossAxisAlignment.CENTER, alignment=ft.MainAxisAlignment.CENTER),
                 width=width, height=72, border_radius=20, bgcolor=_ios_glass,
                 alignment=ft.alignment.center, animate_scale=ft.Animation(150, ft.AnimationCurve.EASE_OUT),
@@ -1966,7 +2158,7 @@ class MobileChatApp:
         )
         hangup_btn.on_click = lambda e: (self._btn_sound(), self._animate_btn(hangup_btn), self._hangup(e))
 
-        # 麦克风图标：蓝色渐变圆
+        # 麦克风图标：绿色渐变圆
         mic_icon = ft.Container(
             content=ft.Icon(ft.icons.MIC, size=40, color=ft.Colors.WHITE),
             width=96, height=96, border_radius=48, gradient=_ios_gradient,
@@ -2147,6 +2339,352 @@ class MobileChatApp:
         except Exception: pass
 
     # ==================== 设置对话框（聚合：昵称/改密码/主题/重连/退出） ====================
+    def _open_lang_dialog(self, e=None):
+        self._btn_sound()
+        def _btn(label, code):
+            return ft.ElevatedButton(label, expand=True, height=40,
+                                     on_click=lambda ev: self._switch_lang(code))
+        dlg = ft.AlertDialog(modal=True, title=ft.Text(t("修改语言")),
+            content=ft.Column(controls=[
+                ft.Row(controls=[_btn(t("中文"), "zh"), _btn("English", "en")], spacing=6)
+            ], width=260, tight=True),
+            actions=[ft.TextButton(t("关闭"), on_click=lambda x: self.page.pop_dialog())])
+        self.page.show_dialog(dlg)
+
+    def _open_theme_dialog(self, e=None):
+        self._btn_sound()
+        def _btn(label, mode, icon):
+            active = (self._theme_mode == mode)
+            return ft.ElevatedButton(label, expand=True, height=40, icon=icon,
+                                     bgcolor=ft.Colors.GREEN_700 if active else None,
+                                     color=ft.Colors.WHITE if active else None,
+                                     on_click=lambda ev: self._switch_theme(mode))
+        dlg = ft.AlertDialog(modal=True, title=ft.Text(t("更改主题颜色")),
+            content=ft.Column(controls=[
+                ft.Row(controls=[
+                    _btn(t("亮色"), "light", ft.icons.LIGHT_MODE),
+                    _btn(t("暗色"), "dark", ft.icons.DARK_MODE),
+                    _btn(t("跟随"), "system", ft.icons.SETTINGS),
+                ], spacing=6)
+            ], width=280, tight=True),
+            actions=[ft.TextButton(t("关闭"), on_click=lambda x: self.page.pop_dialog())])
+        self.page.show_dialog(dlg)
+
+    def _open_ip_mode_dialog(self, e=None):
+        self._btn_sound()
+        dlg = ft.AlertDialog(modal=True, title=ft.Text(t("更改IP模式")),
+            content=ft.Column(controls=[self._build_ip_mode_row()], width=280, tight=True),
+            actions=[ft.TextButton(t("关闭"), on_click=lambda x: self.page.pop_dialog())])
+        self.page.show_dialog(dlg)
+
+    def _export_crash_logs_action(self, e=None):
+        self._btn_sound()
+        try:
+            from crash_export import export_crash_logs
+            count, target_dir, err = export_crash_logs(
+                log_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "crash_logs"))
+            if count > 0:
+                msg = t("已导出 {count} 个崩溃日志到:\n{dir}").format(count=count, dir=target_dir)
+            else:
+                msg = t("导出失败: {err}").format(err=err)
+        except Exception as ex:
+            msg = t("导出异常: {ex}").format(ex=ex)
+        dlg = ft.AlertDialog(modal=True, title=ft.Text(t("崩溃日志导出")),
+            content=ft.Text(msg, selectable=True),
+            actions=[ft.TextButton(t("确定"), on_click=lambda x: self.page.pop_dialog())])
+        self.page.show_dialog(dlg)
+
+    def _settings_nav(self, title, back_target):
+        """构建设置子页面的顶部导航栏。"""
+        back = ft.Container(content=ft.Text(t("返回"), size=16, color="#34C759"),
+                            padding=ft.padding.symmetric(horizontal=8, vertical=8),
+                            on_click=lambda e: self._ui(back_target(direction="left")))
+        return ft.Container(
+            content=ft.Row(controls=[
+                back,
+                ft.Container(content=ft.Text(title, size=18, weight=ft.FontWeight.W_600, color=ft.Colors.GREY_900),
+                             expand=True, alignment=ft.alignment.center),
+                ft.Container(width=50)], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=ft.padding.symmetric(horizontal=8, vertical=10), bgcolor=ft.Colors.WHITE)
+
+    def _option_row(self, label, selected, on_click):
+        """设置选项行：左侧文字，右侧对勾（选中时）。"""
+        return ft.Container(
+            content=ft.Row(controls=[
+                ft.Text(label, size=16, color=ft.Colors.BLACK),
+                ft.Container(expand=True),
+                ft.Icon(ft.icons.CHECK, size=20, color="#34C759") if selected else ft.Container(),
+            ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=ft.padding.symmetric(horizontal=16, vertical=14),
+            on_click=on_click)
+
+    def _option_divider(self):
+        return ft.Container(height=0.5, bgcolor=ft.Colors.with_opacity(0.15, ft.Colors.GREY_400),
+                            margin=ft.margin.only(left=16))
+
+    def _option_group(self, rows):
+        return ft.Container(
+            content=ft.Column(controls=rows, spacing=0),
+            bgcolor=ft.Colors.WHITE, border_radius=12,
+            margin=ft.margin.symmetric(horizontal=16, vertical=6))
+
+    async def show_change_password(self):
+        """修改密码独立页面。"""
+        old_pwd = ft.TextField(password=True, height=50, border_radius=12, filled=True,
+                               fill_color=ft.Colors.with_opacity(0.5, ft.Colors.GREY_100),
+                               border_color=ft.Colors.TRANSPARENT, hint_text=t("原密码"),
+                               content_padding=ft.padding.symmetric(horizontal=14, vertical=8),
+                               color=ft.Colors.GREY_900)
+        new_pwd = ft.TextField(password=True, height=50, border_radius=12, filled=True,
+                               fill_color=ft.Colors.with_opacity(0.5, ft.Colors.GREY_100),
+                               border_color=ft.Colors.TRANSPARENT, hint_text=t("新密码"),
+                               content_padding=ft.padding.symmetric(horizontal=14, vertical=8),
+                               color=ft.Colors.GREY_900)
+        msg = ft.Text("", size=14, color=ft.Colors.GREY_600)
+
+        def _save(ev):
+            self._btn_sound()
+            if not (old_pwd.value and new_pwd.value):
+                msg.value = t("请填写原密码和新密码"); self.page.update(); return
+            if len(new_pwd.value) < 4:
+                msg.value = t("新密码至少4位"); self.page.update(); return
+            msg.value = t("正在修改..."); self.page.update()
+            self._change_password(old_pwd.value, new_pwd.value)
+            # 返回设置页面
+            self._ui(self.show_settings())
+
+        save_btn = ft.Container(
+            content=ft.Text(t("保存"), size=16, weight=ft.FontWeight.W_600, color=ft.Colors.WHITE),
+            alignment=ft.alignment.center, height=48, border_radius=14, expand=True,
+            gradient=ft.LinearGradient(begin=ft.alignment.center_left, end=ft.alignment.center_right,
+                                        colors=["#34C759", "#30D158"]),
+            on_click=_save)
+
+        form = ft.Container(
+            content=ft.Column(controls=[old_pwd, ft.Container(height=8), new_pwd, msg], spacing=0),
+            bgcolor=ft.Colors.WHITE, border_radius=12, padding=ft.padding.all(12),
+            margin=ft.margin.symmetric(horizontal=16, vertical=6))
+
+        root = ft.Container(
+            content=ft.Column(controls=[
+                self._settings_nav(t("修改密码"), self.show_settings),
+                ft.Container(height=4), form,
+                ft.Container(height=8),
+                ft.Container(content=save_btn, margin=ft.margin.symmetric(horizontal=16)),
+                ft.Container(expand=True),
+            ], spacing=0, expand=True, scroll=ft.ScrollMode.AUTO),
+            bgcolor="#F2F2F7", expand=True)
+        await self._mount_with_fade(root)
+
+    async def show_change_nickname(self):
+        """修改用户名独立页面。"""
+        name_field = ft.TextField(value=self.client.username or "", height=50, border_radius=12, filled=True,
+                                  fill_color=ft.Colors.with_opacity(0.5, ft.Colors.GREY_100),
+                                  border_color=ft.Colors.TRANSPARENT, hint_text=t("新昵称"),
+                                  content_padding=ft.padding.symmetric(horizontal=14, vertical=8),
+                               color=ft.Colors.GREY_900)
+        pwd_field = ft.TextField(password=True, height=50, border_radius=12, filled=True,
+                                 fill_color=ft.Colors.with_opacity(0.5, ft.Colors.GREY_100),
+                                 border_color=ft.Colors.TRANSPARENT, hint_text=t("密码"),
+                                 content_padding=ft.padding.symmetric(horizontal=14, vertical=8),
+                               color=ft.Colors.GREY_900)
+        msg = ft.Text("", size=14, color=ft.Colors.GREY_600)
+
+        def _save(ev):
+            self._btn_sound()
+            new_name = (name_field.value or "").strip()
+            if not new_name:
+                msg.value = t("昵称不能为空"); self.page.update(); return
+            msg.value = t("正在修改..."); self.page.update()
+            self._change_nickname(new_name, pwd_field.value or "")
+            # 返回设置页面
+            self._ui(self.show_settings())
+
+        save_btn = ft.Container(
+            content=ft.Text(t("保存"), size=16, weight=ft.FontWeight.W_600, color=ft.Colors.WHITE),
+            alignment=ft.alignment.center, height=48, border_radius=14, expand=True,
+            gradient=ft.LinearGradient(begin=ft.alignment.center_left, end=ft.alignment.center_right,
+                                        colors=["#34C759", "#30D158"]),
+            on_click=_save)
+
+        form = ft.Container(
+            content=ft.Column(controls=[name_field, ft.Container(height=8), pwd_field, msg], spacing=0),
+            bgcolor=ft.Colors.WHITE, border_radius=12, padding=ft.padding.all(12),
+            margin=ft.margin.symmetric(horizontal=16, vertical=6))
+
+        root = ft.Container(
+            content=ft.Column(controls=[
+                self._settings_nav(t("修改用户名"), self.show_settings),
+                ft.Container(height=4), form,
+                ft.Container(height=8),
+                ft.Container(content=save_btn, margin=ft.margin.symmetric(horizontal=16)),
+                ft.Container(expand=True),
+            ], spacing=0, expand=True, scroll=ft.ScrollMode.AUTO),
+            bgcolor="#F2F2F7", expand=True)
+        await self._mount_with_fade(root)
+
+    async def show_language_settings(self):
+        """语言设置独立页面。"""
+        cur = load_language()
+        group = self._option_group([
+            self._option_row("简体中文", cur == "zh", lambda e: self._switch_lang("zh")),
+            self._option_divider(),
+            self._option_row("繁體中文（中華民國臺灣省）", cur == "zh_TW", lambda e: self._switch_lang("zh_TW")),
+            self._option_divider(),
+            self._option_row("English", cur == "en", lambda e: self._switch_lang("en")),
+        ])
+        root = ft.Container(
+            content=ft.Column(controls=[
+                self._settings_nav(t("修改语言"), self.show_settings),
+                ft.Container(height=4), group, ft.Container(expand=True),
+            ], spacing=0, expand=True, scroll=ft.ScrollMode.AUTO),
+            bgcolor="#F2F2F7", expand=True)
+        await self._mount_with_fade(root)
+
+    async def show_theme_settings(self):
+        """主题颜色设置独立页面。"""
+        cur = self._theme_mode
+        group = self._option_group([
+            self._option_row(t("亮色"), cur == "light", lambda e: self._switch_theme("light")),
+            self._option_divider(),
+            self._option_row(t("暗色"), cur == "dark", lambda e: self._switch_theme("dark")),
+            self._option_divider(),
+            self._option_row(t("跟随系统"), cur == "system", lambda e: self._switch_theme("system")),
+        ])
+        root = ft.Container(
+            content=ft.Column(controls=[
+                self._settings_nav(t("更改主题颜色"), self.show_settings),
+                ft.Container(height=4), group, ft.Container(expand=True),
+            ], spacing=0, expand=True, scroll=ft.ScrollMode.AUTO),
+            bgcolor="#F2F2F7", expand=True)
+        await self._mount_with_fade(root)
+
+    async def show_ip_mode_settings(self):
+        """IP模式设置独立页面。"""
+        cur = load_ip_mode()
+        group = self._option_group([
+            self._option_row(t("自动"), cur == "auto", lambda e: self._switch_ip_mode("auto")),
+            self._option_divider(),
+            self._option_row(t("仅IPv4"), cur == "ipv4", lambda e: self._switch_ip_mode("ipv4")),
+            self._option_divider(),
+            self._option_row(t("仅IPv6"), cur == "ipv6", lambda e: self._switch_ip_mode("ipv6")),
+        ])
+        root = ft.Container(
+            content=ft.Column(controls=[
+                self._settings_nav(t("更改IP模式"), self.show_settings),
+                ft.Container(height=4), group, ft.Container(expand=True),
+            ], spacing=0, expand=True, scroll=ft.ScrollMode.AUTO),
+            bgcolor="#F2F2F7", expand=True)
+        await self._mount_with_fade(root)
+
+    def _switch_ip_mode(self, mode):
+        """切换IP模式（供独立页面调用）。"""
+        self._btn_sound()
+        save_ip_mode(mode)
+        # 同步到当前客户端对象：现有连接不变，断线重连/下次请求即按新模式
+        try:
+            self.client.set_ip_mode(mode)
+        except Exception:
+            pass
+        self._append_system(t("IP模式已切换为{mode}").format(
+            mode={"auto": t("自动"), "ipv4": t("仅IPv4"), "ipv6": t("仅IPv6")}.get(mode, mode)))
+        self._ui(self.show_ip_mode_settings())
+
+    async def show_settings(self, direction="right"):
+        """独立设置页面（iOS 风格分组列表）。"""
+        _ios_bg = "#F2F2F7"
+
+        def _row(label, on_click, color=None, right_text=None):
+            return ft.Container(
+                content=ft.Row(controls=[
+                    ft.Text(label, size=16, color=color or ft.Colors.BLACK),
+                    ft.Container(expand=True),
+                    ft.Text(right_text, size=14, color=ft.Colors.GREY_400) if right_text else ft.Container(),
+                    ft.Icon(ft.icons.CHEVRON_RIGHT, size=18, color=ft.Colors.GREY_400),
+                ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                padding=ft.padding.symmetric(horizontal=16, vertical=14),
+                on_click=on_click)
+
+        def _div():
+            return ft.Container(height=0.5, bgcolor=ft.Colors.with_opacity(0.15, ft.Colors.GREY_400),
+                                margin=ft.margin.only(left=16))
+
+        def _group(rows):
+            return ft.Container(
+                content=ft.Column(controls=rows, spacing=0),
+                bgcolor=ft.Colors.WHITE, border_radius=12,
+                margin=ft.margin.symmetric(horizontal=16, vertical=6))
+
+        # 顶部导航
+        back = ft.Container(content=ft.Text(t("退出"), size=16, color="#34C759"),
+                            padding=ft.padding.symmetric(horizontal=8, vertical=8),
+                            on_click=lambda e: self._ui(self.show_chat(direction="left")))
+        nav = ft.Container(
+            content=ft.Row(controls=[
+                back,
+                ft.Container(content=ft.Text(t("设置"), size=18, weight=ft.FontWeight.W_600, color=ft.Colors.GREY_900),
+                             expand=True, alignment=ft.alignment.center),
+                ft.Container(width=50)], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=ft.padding.symmetric(horizontal=8, vertical=10), bgcolor=ft.Colors.WHITE)
+
+        # 当前模式显示文字
+        _lang_map = {"zh": "简体中文", "zh_TW": "繁體中文", "en": "English"}
+        _lang_label = _lang_map.get(load_language(), "简体中文")
+        _theme_label = {t("亮色"): "light", t("暗色"): "dark", t("跟随系统"): "system"}
+        _theme_text = {v: k for k, v in _theme_label.items()}.get(self._theme_mode, t("跟随系统"))
+        _ip_text = {"auto": t("自动"), "ipv4": t("仅IPv4"), "ipv6": t("仅IPv6")}.get(load_ip_mode(), t("自动"))
+
+        account_group = _group([
+            _row(t("修改密码"), lambda e: self._ui(self.show_change_password())),
+            _div(),
+            _row(t("修改用户名"), lambda e: self._ui(self.show_change_nickname())),
+        ])
+
+        pref_group = _group([
+            _row(t("修改语言"), lambda e: self._ui(self.show_language_settings()), right_text=_lang_label),
+            _div(),
+            _row(t("更改主题颜色"), lambda e: self._ui(self.show_theme_settings()), right_text=_theme_text),
+            _div(),
+            _row(t("更改IP模式"), lambda e: self._ui(self.show_ip_mode_settings()), right_text=_ip_text),
+        ])
+
+        other_group = _group([
+            _row(t("导出崩溃日志"), lambda e: self._export_crash_logs_action(e)),
+        ])
+
+        bottom_group = ft.Container(
+            content=ft.Row(controls=[
+                ft.Container(content=ft.Text(t("重新连接"), size=16, color="#34C759", text_align=ft.TextAlign.CENTER),
+                             padding=ft.padding.symmetric(vertical=14), expand=True,
+                             on_click=lambda e: self._reconnect(e)),
+                ft.Container(width=0.5, bgcolor=ft.Colors.with_opacity(0.15, ft.Colors.GREY_400), height=44),
+                ft.Container(content=ft.Text(t("清空聊天记录"), size=16, color=ft.Colors.RED_500, text_align=ft.TextAlign.CENTER),
+                             padding=ft.padding.symmetric(vertical=14), expand=True,
+                             on_click=lambda e: self._clear_chat_history(e)),
+            ], spacing=0),
+            bgcolor=ft.Colors.WHITE, border_radius=12,
+            margin=ft.margin.symmetric(horizontal=16, vertical=6))
+
+        logout_btn = ft.Container(
+            content=ft.Text(t("退出登录"), size=16, color=ft.Colors.RED_500, text_align=ft.TextAlign.CENTER),
+            padding=ft.padding.symmetric(vertical=14),
+            bgcolor=ft.Colors.WHITE, border_radius=12,
+            margin=ft.margin.symmetric(horizontal=16, vertical=6),
+            on_click=lambda e: self._logout(e))
+
+        ver = ft.Text(t("版本 {VERSION}").format(VERSION=VERSION), size=12,
+                      color=ft.Colors.GREY_400, text_align=ft.TextAlign.CENTER)
+
+        root = ft.Container(
+            content=ft.Column(controls=[
+                nav, ft.Container(height=4),
+                account_group, pref_group, other_group, bottom_group, logout_btn,
+                ft.Container(expand=True), ver, ft.Container(height=16),
+            ], spacing=0, expand=True, scroll=ft.ScrollMode.AUTO),
+            bgcolor=_ios_bg, expand=True)
+
+        await self._mount_with_fade(root, direction=direction)
+
     def _open_settings(self, e):
         self._btn_sound()
         nick_btn = ft.ElevatedButton(t("修改昵称"), expand=True, height=44, on_click=self._open_nickname_dialog)
@@ -2155,7 +2693,7 @@ class MobileChatApp:
         def _make_theme_btn(label, mode, icon):
             is_active = (self._theme_mode == mode)
             return ft.ElevatedButton(label, expand=True, height=40, icon=icon,
-                                      bgcolor=ft.Colors.BLUE_700 if is_active else None,
+                                      bgcolor=ft.Colors.GREEN_700 if is_active else None,
                                       color=ft.Colors.WHITE if is_active else None,
                                       on_click=lambda ev: self._switch_theme(mode))
         theme_row = ft.Row(controls=[
@@ -2226,9 +2764,16 @@ class MobileChatApp:
         self._apply_theme_mode(mode)
         self._save_theme_config(mode)
         self._append_system(t("已切换到{mode}主题").format(mode=(t("亮色") if mode=="light" else t("暗色") if mode=="dark" else t("跟随系统"))))
-        # 关闭设置弹窗
-        if self._active_dialog:
-            self._close_dialog_with_fade(self._active_dialog)
+        # 重建页面让主题生效
+        async def _rebuild():
+            try:
+                if getattr(self.client, "username", None):
+                    await self.show_chat()
+                else:
+                    await self.show_login()
+            except Exception as e:
+                print(f"[theme] rebuild failed: {e}")
+        self._ui(_rebuild())
 
     def _open_nickname_dialog(self, e):
         self._btn_sound()
@@ -2309,7 +2854,8 @@ class MobileChatApp:
 
     def _reconnect(self, e):
         self._btn_sound()
-        self.page.pop_dialog()
+        try: self.page.pop_dialog()
+        except Exception: pass
         self._append_system(t("正在重新连接..."))
         self._reconnect_attempts = 0
         self._stop_heartbeat()
@@ -2519,25 +3065,34 @@ class MobileChatApp:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, func)
 
-    async def _mount_with_fade(self, content):
-        """页面切换淡入+轻微上移过渡（先渲染初始帧再触发动画，避免被合并跳过）。"""
+    async def _mount_with_fade(self, content, direction="right"):
+        """页面切换：direction='right' 从右侧滑入（前进），'left' 从左侧滑入（返回）。"""
+        start_x = 1.0 if direction == "right" else -1.0
         try:
             wrapper = ft.Container(
-                content=content, opacity=0, offset=ft.transform.Offset(0, 0.06),
-                animate_opacity=ft.Animation(300, ft.AnimationCurve.EASE_OUT_CUBIC),
+                content=content, offset=ft.transform.Offset(start_x, 0),
                 animate_offset=ft.Animation(300, ft.AnimationCurve.EASE_OUT_CUBIC),
                 expand=True)
             self.page.controls.clear()
             self.page.controls.append(wrapper)
+            try:
+                import dark_theme as _dtm
+                _dtm.skin_app(self, update=False)
+            except Exception:
+                pass
             self.page.update()
             await asyncio.sleep(0.03)
-            wrapper.opacity = 1
             wrapper.offset = ft.transform.Offset(0, 0)
             self.page.update()
         except Exception as e:
-            self._log(f"page fade failed: {e}")
+            self._log(f"page slide failed: {e}")
             self.page.controls.clear()
             self.page.controls.append(content)
+            try:
+                import dark_theme as _dtm
+                _dtm.skin_app(self, update=False)
+            except Exception:
+                pass
             self.page.update()
 
     def _ui(self, coro_or_func, *args):
@@ -2665,7 +3220,7 @@ def pick_photo_native(app, path_display, send_btn, dlg):
 try:
     from crash_logger import CrashLogger
     _crash_logger = CrashLogger(
-        log_dir="crash_logs",
+        log_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "crash_logs"),
         app_version=VERSION,
         app_name="LanTalk",
         include_locals=True,
@@ -2851,6 +3406,54 @@ try:
             pass
         return _r
     MobileChatApp._open_settings = _open_settings_themed
+
+    # 5) 统一弹窗入口：任何 AlertDialog 弹出后立即按当前主题换肤，
+    #    覆盖加好友/来电/语言/主题/IP/崩溃导出/文件等全部弹窗(含其他模块)。
+    def _dialog_is_dark(app):
+        _m = getattr(app, "_theme_mode", "system")
+        if _m == "dark":
+            return True
+        if _m == "system":
+            try:
+                return _dt.is_system_dark()
+            except Exception:
+                return False
+        return False
+
+    _lt_orig_show_dialog = ft.Page.show_dialog
+
+    def _show_dialog_skinned(page, dialog):
+        _r = _lt_orig_show_dialog(page, dialog)
+        app = None
+        try:
+            app = getattr(page, "_lt_app", None)
+            if app is not None:
+                app._active_dialog = dialog
+            page._lt_active_dialog = dialog
+            _dt.skin_control(dialog, _dialog_is_dark(app) if app is not None else False)
+            page.update()
+        except Exception as _de:
+            try:
+                if app is not None:
+                    app._log(f"dialog skin failed: {_de}")
+            except Exception:
+                pass
+        return _r
+    ft.Page.show_dialog = _show_dialog_skinned
+
+    _lt_orig_pop_dialog = ft.Page.pop_dialog
+
+    def _pop_dialog_clear(page):
+        _r = _lt_orig_pop_dialog(page)
+        try:
+            page._lt_active_dialog = None
+            app = getattr(page, "_lt_app", None)
+            if app is not None:
+                app._active_dialog = None
+        except Exception:
+            pass
+        return _r
+    ft.Page.pop_dialog = _pop_dialog_clear
 except Exception as _theme_hook_err:
     print(f"[DarkTheme] hook failed(ignored): {_theme_hook_err}")
 
@@ -3037,33 +3640,8 @@ async def main(page):
 
 
 # ======================================================================
-# 主界面右下角悬浮【导出崩溃日志】FAB（新增，不修改原有代码）：
-# 进聊天页后即在右下角显示一个🐛按钮，点击导出 crash_logs/ 到公共 Download。
+# 【导出崩溃日志】功能已移入设置页面，不再使用悬浮 FAB（会遮挡输入栏按钮）。
 # ======================================================================
-try:
-    from crash_export import build_export_button as _build_crash_btn
-
-    _orig_show_chat_fab = MobileChatApp.show_chat
-
-    async def _show_chat_with_fab(self, *args, **kwargs):
-        _r = await _orig_show_chat_fab(self, *args, **kwargs)
-        try:
-            if self.page is not None:
-                btn = _build_crash_btn(self)
-                # FAB 悬浮在右下角，最显眼；若原页已有 FAB 则追加为 secondary
-                try:
-                    self.page.floating_action_button = btn
-                except Exception:
-                    pass
-                self.page.update()
-        except Exception as _fab_err:
-            print(f"[CrashFAB] add failed(ignored): {_fab_err}")
-        return _r
-
-    MobileChatApp.show_chat = _show_chat_with_fab
-except Exception as _fab_hook_err:
-    print(f"[CrashFAB] hook failed(ignored): {_fab_hook_err}")
-
 
 # ======================================================================
 # 关键步骤埋点：在语音/文件等操作前写一行到 crash_logs/debug_trace.txt。

@@ -3,58 +3,59 @@ chcp 65001 >nul
 cd /d "%~dp0"
 
 echo ============================================================
-echo   LanTalk ÒÆ¶¯¶Ë - Ò»¼ü´ò°ü APK£¨ÍÆËÍµ½ GitHub Actions£©
+echo   LanTalk ç§»åŠ¨ç«¯ - ä¸€é”®æ‰“åŒ… APK å¹¶æŽ¨é€åˆ° GitHub Actions
 echo ============================================================
 echo.
-echo µ±Ç°Ä¿Â¼: %cd%
+echo å½“å‰ç›®å½•: %cd%
 echo.
 
-REM ========== 1. ¼ì²é Git ==========
-echo [1/7] ¼ì²é Git...
+REM ========== 1. æ£€æŸ¥ Git ==========
+echo [1/7] æ£€æŸ¥ Git...
 git --version >nul 2>&1
 if errorlevel 1 (
-    echo [´íÎó] Î´¼ì²âµ½ Git£¬ÇëÏÈ°²×°£º
+    echo [é”™è¯¯] æœªæ£€æµ‹åˆ° Gitï¼Œè¯·å…ˆå®‰è£…ï¼š
     echo https://git-scm.com/download/win
-    echo °²×°ºóÖØÆôÃüÁîÐÐÔÙÔËÐÐ±¾½Å±¾
+    echo å®‰è£…åŽé‡æ–°è¿è¡Œæœ¬è„šæœ¬ã€‚
     pause
     exit /b 1
 )
-echo   Git ÒÑ°²×°
+echo   Git å·²å®‰è£…
 
-REM ========== 2. ÅäÖÃ Git ÓÃ»§Éí·Ý ==========
-echo [2/7] ¼ì²é Git ÓÃ»§Éí·Ý...
+REM ========== 2. é…ç½® Git ç”¨æˆ·ä¿¡æ¯ ==========
+echo [2/7] é…ç½® Git ç”¨æˆ·ä¿¡æ¯...
 git config --global user.name >nul 2>&1
 if errorlevel 1 (
-    echo   Î´ÅäÖÃÓÃ»§Ãû£¬ÕýÔÚÉèÖÃ...
+    echo   æœªè®¾ç½®ç”¨æˆ·åï¼Œä½¿ç”¨é»˜è®¤...
     git config --global user.name "user114514-debug"
 )
 git config --global user.email >nul 2>&1
 if errorlevel 1 (
-    echo   Î´ÅäÖÃÓÊÏä£¬ÕýÔÚÉèÖÃ...
+    echo   æœªè®¾ç½®é‚®ç®±ï¼Œä½¿ç”¨é»˜è®¤...
     git config --global user.email "user114514@example.com"
 )
-echo   ÓÃ»§Éí·ÝÒÑÅäÖÃ
+echo   ç”¨æˆ·ä¿¡æ¯å·²å°±ç»ª
 
-REM ========== 3. È·ÈÏ±ØÒªÎÄ¼þ ==========
-echo [3/7] ¼ì²éÏîÄ¿ÎÄ¼þ...
+REM ========== 3. ç¡®è®¤é¡¹ç›®æ–‡ä»¶ ==========
+echo [3/7] æ£€æŸ¥é¡¹ç›®æ–‡ä»¶...
 if not exist mobile_main.py (
-    echo [´íÎó] µ±Ç°Ä¿Â¼Ã»ÓÐ mobile_main.py£¬ÇëÈ·ÈÏ½Å±¾·ÅÔÚÏîÄ¿¸ùÄ¿Â¼
+    echo [é”™è¯¯] å½“å‰ç›®å½•æ²¡æœ‰ mobile_main.pyï¼Œè¯·ç¡®è®¤è„šæœ¬æ”¾åœ¨é¡¹ç›®æ ¹ç›®å½•
     pause
     exit /b 1
 )
-echo   mobile_main.py: ´æÔÚ
+echo   mobile_main.py: å­˜åœ¨
 
 if not exist requirements.txt (
     echo flet==0.86.5 > requirements.txt
     echo flet-audio>=0.86.0 >> requirements.txt
     echo pyjnius>=1.6.1 >> requirements.txt
-    echo   ÒÑ´´½¨ requirements.txt£¨º¬ flet-audio¡¢pyjnius£©
+    echo   å·²ç”Ÿæˆ requirements.txt
 ) else (
-    echo   requirements.txt: ´æÔÚ
+    echo   requirements.txt: å­˜åœ¨
 )
 
-if not exist .gitignore (
-    (
+REM ========== 4. ç”Ÿæˆ .gitignore ==========
+echo [4/7] ç”Ÿæˆ .gitignore...
+(
 echo __pycache__/
 echo *.pyc
 echo *.pyo
@@ -63,18 +64,22 @@ echo .gradle/
 echo *.log
 echo venv/
 echo .flet/
-    ) > .gitignore
-    echo   ÒÑ´´½¨ .gitignore
-) else (
-    echo   .gitignore: ´æÔÚ
-)
+echo crash_logs/
+echo theme_config.json
+echo test_*.py
+echo _emoji_*.py
+echo generate_flag_png.py
+echo err_*.txt
+echo out_*.txt
+echo *_trace.txt
+) > .gitignore
+echo   .gitignore å·²æ›´æ–°ï¼ˆæŽ’é™¤å´©æºƒæ—¥å¿—ã€æµ‹è¯•è„šæœ¬ã€ä¸´æ—¶æ–‡ä»¶ï¼‰
 
-REM ========== 4. ´´½¨ GitHub Actions workflow ==========
-echo [4/7] ¼ì²é GitHub Actions ÅäÖÃ...
+REM ========== 5. ç”Ÿæˆ GitHub Actions workflow ==========
+echo [5/7] ç”Ÿæˆ GitHub Actions é…ç½®...
 if not exist .github\workflows mkdir .github\workflows
-if exist .github\workflows\build-apk.yml del .github\workflows\build-apk.yml
-if not exist .github\workflows\build-apk.yml (
-    (
+del .github\workflows\build-apk.yml >nul 2>&1
+(
 echo name: Build Android APK
 echo.
 echo on:
@@ -115,86 +120,70 @@ echo         run: ^|
 echo           python -m pip install --upgrade pip
 echo           pip install "flet==0.86.5" "flet-audio>=0.86.0" "flet-android-notifications>=0.11.0" "cryptography>=42.0.0" "pyjnius>=1.6.1" "psutil>=7.0.0"
 echo.
-echo       - name: Generate Flutter project (first build)
+echo       - name: Build APK with icon
 echo         run: ^|
-echo           flet build apk --module-name mobile_main --project "LanTalk" --org "com.lantalk" --product "lantalk" --build-number "4" --build-version "3.7.2"
-echo         continue-on-error: true
-echo.
-echo       - name: Patch Flutter project for native notifications
-echo         run: ^|
-echo           flet-android-notifications-patch --project-root build/flutter
-echo.
-echo       - name: Build patched APK
-echo         run: ^|
-echo           cd build/flutter
-echo           export SERIOUS_PYTHON_SITE_PACKAGES="$GITHUB_WORKSPACE/build/site-packages"
-echo           export SERIOUS_PYTHON_APP="$GITHUB_WORKSPACE/build/python-app"
-echo           flutter build apk --release --build-name "3.7.2" --build-number "4"
+echo           flet build apk --module-name mobile_main --project "LanTalk" --org "com.lantalk" --product "lantalk" --build-number "5" --build-version "3.7.3" --icon "assets/icon.png"
 echo.
 echo       - name: Upload APK
 echo         uses: actions/upload-artifact@v4
 echo         with:
 echo           name: lantalk-apk
 echo           path: build/flutter/build/app/outputs/flutter-apk/app-release.apk
-    echo   ÒÑ´´½¨ build-apk.yml£¨º¬ flet-audio¡¢pyjnius£©
-) else (
-    echo   build-apk.yml: ´æÔÚ
-)
+) > .github\workflows\build-apk.yml
+echo   build-apk.yml å·²ç”Ÿæˆï¼ˆv3.7.3 / build 5 / å¸¦å›¾æ ‡ï¼‰
 
-REM ========== 5. ³õÊ¼»¯ Git ²¢Ìá½» ==========
-echo [5/7] ³õÊ¼»¯ Git ²¢Ìá½»...
+REM ========== 6. åˆå§‹åŒ– Git å¹¶æäº¤ ==========
+echo [6/7] åˆå§‹åŒ– Git å¹¶æäº¤...
 if not exist .git (
     git init
     git branch -M main
-    echo   ÒÑ³õÊ¼»¯ Git ²Ö¿â
+    echo   å·²åˆå§‹åŒ– Git ä»“åº“
 ) else (
-    echo   Git ²Ö¿âÒÑ´æÔÚ
+    echo   Git ä»“åº“å·²å­˜åœ¨
 )
 git add .
-git commit -m "LanTalk mobile v3.7.2 - build APK" >nul 2>&1
+git commit -m "LanTalk mobile v3.7.3 - white splash + zh_TW + icon" >nul 2>&1
 if errorlevel 1 (
-    echo   Ã»ÓÐÐÂµÄ¸ü¸ÄÐèÒªÌá½»
+    echo   æ²¡æœ‰æ–°çš„æ”¹åŠ¨éœ€è¦æäº¤
 ) else (
-    echo   ÒÑÌá½»¸ü¸Ä
+    echo   å·²æäº¤æ”¹åŠ¨
 )
 
-REM ========== 6. ÉèÖÃÔ¶³Ì²Ö¿â²¢ÍÆËÍ ==========
-echo [6/7] ÍÆËÍµ½ GitHub...
+REM ========== 7. æŽ¨é€åˆ°è¿œç¨‹ä»“åº“ ==========
+echo [7/7] æŽ¨é€åˆ° GitHub...
 git remote remove origin >nul 2>&1
 git remote add origin https://github.com/user114514-debug/lantalk-mobile.git
 git push -f -u origin main
 
 if errorlevel 1 (
     echo.
-    echo [´íÎó] ÍÆËÍÊ§°Ü£¡
-    echo ¿ÉÄÜÔ­Òò£º
-    echo   1. ÐèÒªµÇÂ¼ GitHub£¨ä¯ÀÀÆ÷µÇÂ¼»òÊäÈë token£©
-    echo   2. ÍøÂçÎÊÌâ
+    echo [é”™è¯¯] æŽ¨é€å¤±è´¥ï¼
+    echo å¯èƒ½åŽŸå› ï¼š
+    echo   1. éœ€è¦ç™»å½• GitHubï¼ˆé¦–æ¬¡æŽ¨é€ä¼šå¼¹å‡ºç™»å½•çª—å£ï¼‰
+    echo   2. ç½‘ç»œé—®é¢˜
     echo.
-    echo ÇëÊÖ¶¯Ö´ÐÐ git push ²é¿´¾ßÌå´íÎó
     pause
     exit /b 1
 )
 
-REM ========== 7. Íê³É ==========
+REM ========== å®Œæˆ ==========
 echo.
 echo ============================================================
-echo   ÍÆËÍ³É¹¦£¡GitHub Actions ÕýÔÚ×Ô¶¯±àÒë APK
+echo   æŽ¨é€æˆåŠŸï¼GitHub Actions æ­£åœ¨æž„å»º APK
 echo ============================================================
 echo.
-echo   ±àÒëÔ¼Ðè 8-10 ·ÖÖÓ
+echo   é¢„è®¡éœ€è¦ 8-10 åˆ†é’Ÿã€‚
 echo.
-echo   ²é¿´±àÒë×´Ì¬£º
+echo   æŸ¥çœ‹æž„å»ºçŠ¶æ€ï¼š
 echo   https://github.com/user114514-debug/lantalk-mobile/actions
 echo.
-echo   ±àÒëÍê³Éºó£º
-echo   1. µã½øÂÌÉ« ? µÄ¼ÇÂ¼
-echo   2. À­µ½×îµ×²¿ Artifacts
-echo   3. ÏÂÔØ lantalk-apk
-echo   4. ½âÑ¹µÃµ½ app-release.apk
-echo   5. ´«µ½ÊÖ»ú°²×°
+echo   æž„å»ºå®ŒæˆåŽï¼š
+echo   1. ç‚¹å‡»ç»¿è‰² âœ“ çš„ä»»åŠ¡
+echo   2. æ‹‰åˆ°åº•éƒ¨ Artifacts
+echo   3. ä¸‹è½½ lantalk-apk
+echo   4. è§£åŽ‹å¾—åˆ° app-release.apk
+echo   5. ä¼ åˆ°æ‰‹æœºå®‰è£…å³å¯
 echo.
-echo   °´ÈÎÒâ¼ü´ò¿ª Actions Ò³Ãæ...
+echo   æ­£åœ¨æ‰“å¼€ Actions é¡µé¢...
 pause >nul
 start https://github.com/user114514-debug/lantalk-mobile/actions
-
