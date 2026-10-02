@@ -2394,6 +2394,107 @@ class MobileChatApp:
             actions=[ft.TextButton(t("确定"), on_click=lambda x: self.page.pop_dialog())])
         self.page.show_dialog(dlg)
 
+    def _get_crash_log_dir(self):
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), "crash_logs")
+
+    def _list_crash_logs(self):
+        """列出所有日志文件（最新在前）。"""
+        log_dir = self._get_crash_log_dir()
+        if not os.path.exists(log_dir):
+            return []
+        files = [f for f in os.listdir(log_dir)
+                 if (f.startswith("crash_") or f == "debug_trace.txt") and f.endswith(".txt")]
+        files.sort(reverse=True)
+        return files
+
+    async def show_crash_logs(self, direction="right"):
+        """崩溃日志列表页面。"""
+        files = self._list_crash_logs()
+        rows = []
+        if not files:
+            rows.append(ft.Container(
+                content=ft.Text(t("暂无日志"), size=15, color=ft.Colors.GREY_500, text_align=ft.TextAlign.CENTER),
+                padding=ft.padding.symmetric(vertical=30)))
+        else:
+            for i, fname in enumerate(files):
+                log_path = os.path.join(self._get_crash_log_dir(), fname)
+                try:
+                    size = os.path.getsize(log_path)
+                    size_label = f"{size} B" if size < 1024 else f"{size//1024} KB"
+                except Exception:
+                    size_label = ""
+                rows.append(ft.Container(
+                    content=ft.Row(controls=[
+                        ft.Icon(ft.icons.DESCRIPTION_OUTLINED, size=20, color="#34C759"),
+                        ft.Column(controls=[
+                            ft.Text(fname, size=14, color=ft.Colors.GREY_900),
+                            ft.Text(size_label, size=12, color=ft.Colors.GREY_500),
+                        ], spacing=2, expand=True),
+                        ft.Icon(ft.icons.CHEVRON_RIGHT, size=18, color=ft.Colors.GREY_400),
+                    ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    padding=ft.padding.symmetric(horizontal=16, vertical=12),
+                    on_click=lambda e, fn=fname: self._ui(self.show_crash_log_detail(fn))))
+                if i < len(files) - 1:
+                    rows.append(ft.Container(height=0.5, bgcolor=ft.Colors.with_opacity(0.1, ft.Colors.GREY_400),
+                                             margin=ft.margin.only(left=46)))
+        group = ft.Container(content=ft.Column(controls=rows, spacing=0),
+                             bgcolor=ft.Colors.WHITE, border_radius=12,
+                             margin=ft.margin.symmetric(horizontal=16, vertical=8))
+        root = ft.Container(
+            content=ft.Column(controls=[
+                self._settings_nav(t("崩溃日志"), self.show_settings),
+                ft.Container(expand=True, content=ft.Column(controls=[group], scroll=ft.ScrollMode.AUTO)),
+            ], spacing=0, expand=True),
+            bgcolor="#F2F2F7", expand=True)
+        await self._mount_with_fade(root, direction=direction)
+
+    async def show_crash_log_detail(self, filename, direction="right"):
+        """日志详情页面：显示内容 + 复制按钮。"""
+        log_path = os.path.join(self._get_crash_log_dir(), filename)
+        try:
+            with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+        except Exception as e:
+            content = f"读取失败: {e}"
+
+        def _copy_all(e=None):
+            try:
+                self._btn_sound()
+            except Exception:
+                pass
+            try:
+                self.page.set_clipboard(content)
+                self._append_system(t("已复制到剪贴板"))
+            except Exception:
+                pass
+
+        copy_btn = ft.Container(
+            content=ft.Row(controls=[
+                ft.Icon(ft.icons.CONTENT_COPY, size=18, color="#34C759"),
+                ft.Text(t("复制全部"), size=16, color="#34C759"),
+            ], spacing=6, alignment=ft.MainAxisAlignment.CENTER),
+            padding=ft.padding.symmetric(vertical=12),
+            margin=ft.margin.symmetric(horizontal=16, vertical=8),
+            bgcolor=ft.Colors.WHITE, border_radius=12,
+            on_click=_copy_all)
+
+        content_view = ft.Container(
+            content=ft.Text(content, size=12, color=ft.Colors.GREY_800, selectable=True,
+                            font_family="monospace"),
+            padding=ft.padding.all(14),
+            margin=ft.margin.symmetric(horizontal=16),
+            bgcolor=ft.Colors.WHITE, border_radius=12)
+
+        root = ft.Container(
+            content=ft.Column(controls=[
+                self._settings_nav(filename, self.show_crash_logs),
+                ft.Container(expand=True, content=ft.Column(controls=[
+                    copy_btn, content_view, ft.Container(height=16),
+                ], scroll=ft.ScrollMode.AUTO)),
+            ], spacing=0, expand=True),
+            bgcolor="#F2F2F7", expand=True)
+        await self._mount_with_fade(root, direction=direction)
+
     def _settings_nav(self, title, back_target):
         """构建设置子页面的顶部导航栏。"""
         back = ft.Container(content=ft.Text(t("返回"), size=16, color="#34C759"),
@@ -2649,7 +2750,7 @@ class MobileChatApp:
         ])
 
         other_group = _group([
-            _row(t("导出崩溃日志"), lambda e: self._export_crash_logs_action(e)),
+            _row(t("崩溃日志"), lambda e: self._ui(self.show_crash_logs())),
         ])
 
         bottom_group = ft.Container(
