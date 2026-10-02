@@ -87,7 +87,47 @@ def get_activity():
                 return act
         except Exception:
             continue
-    return None
+    # 兜底：反射 ActivityThread.mActivities，不依赖任何框架类名，
+    # 只要应用在前台就能拿到当前 Activity（Flet/serious_python/kivy 通用）
+    return _get_activity_via_activitythread()
+
+
+def _get_activity_via_activitythread():
+    """通过反射 android.app.ActivityThread 获取当前前台 Activity。
+    不依赖 mActivity 静态字段，任何 Android 框架都适用。"""
+    try:
+        ActivityThread = _autoclass("android.app.ActivityThread")
+        at = ActivityThread.currentActivityThread()
+        if at is None:
+            return None
+        # 反射获取 mActivities（ArrayMap<IBinder, ActivityClientRecord>）
+        at_cls = at.getClass()
+        f_macts = at_cls.getDeclaredField("mActivities")
+        f_macts.setAccessible(True)
+        activities = f_macts.get(at)
+        if activities is None:
+            return None
+        size = int(activities.size())
+        # 从栈顶（最后一个）开始找，通常是当前可见 Activity
+        for i in range(size - 1, -1, -1):
+            try:
+                record = activities.valueAt(i)
+                # ActivityClientRecord.activity 字段
+                act = getattr(record, "activity", None)
+                if act is not None:
+                    return act
+                # pyjnius 直接取字段失败时反射
+                r_cls = record.getClass()
+                f_act = r_cls.getDeclaredField("activity")
+                f_act.setAccessible(True)
+                act = f_act.get(record)
+                if act is not None:
+                    return act
+            except Exception:
+                continue
+        return None
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------- #
@@ -146,13 +186,19 @@ def _is_granted(activity, permission=RECORD_AUDIO):
 
 
 def has_record_permission():
-    """同步判断是否已获得录音权限。桌面端恒为 True。"""
+    """同步判断是否已获得录音权限。桌面端恒为 True。
+    注意：拿不到 Activity 时返回 True（乐观放行），让录音尝试启动；
+    真正无权限时 AudioRecord 会抛异常，由调用方捕获提示，
+    避免因检测代码自身故障而误报"需要权限"刷屏。"""
     if not is_android():
         return True
     act = get_activity()
     if act is None:
-        return False
-    return _is_granted(act)
+        return True
+    try:
+        return _is_granted(act)
+    except Exception:
+        return True
 
 
 def _java_string_array(items):
@@ -173,8 +219,12 @@ def request_record_permission(timeout=30.0, request_code=20260913):
         return True
     act = get_activity()
     if act is None:
-        return False
-    if _is_granted(act):
+        return True  # 检测不了就放行，让录音尝试启动
+    try:
+        already = _is_granted(act)
+    except Exception:
+        already = False
+    if already:
         return True
 
     requested = threading.Event()
@@ -239,16 +289,20 @@ def get_storage_perms():
 
 
 def has_storage_permission():
-    """同步判断是否已获得存储/媒体权限。桌面端恒为 True。"""
+    """同步判断是否已获得存储/媒体权限。桌面端恒为 True。
+    拿不到 Activity 时乐观放行（同 has_record_permission）。"""
     if not is_android():
         return True
     act = get_activity()
     if act is None:
-        return False
-    for perm in get_storage_perms():
-        if not _is_granted(act, perm):
-            return False
-    return True
+        return True
+    try:
+        for perm in get_storage_perms():
+            if not _is_granted(act, perm):
+                return False
+        return True
+    except Exception:
+        return True
 
 
 def request_storage_permission(timeout=30.0, request_code=20260924):
@@ -262,9 +316,12 @@ def request_storage_permission(timeout=30.0, request_code=20260924):
         return True
     act = get_activity()
     if act is None:
-        return False
+        return True  # 检测不了就放行
     perms = get_storage_perms()
-    need = [p for p in perms if not _is_granted(act, p)]
+    try:
+        need = [p for p in perms if not _is_granted(act, p)]
+    except Exception:
+        need = []
     if not need:
         return True
 

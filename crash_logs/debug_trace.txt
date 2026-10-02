@@ -148,3 +148,6 @@
 [17:19:38] [AudioPatch] is_android()=False, skip patch
 [BOOT] android_audio_fix patch result=False
 [17:19:38] === APP process started ===
+[18:16:11] [AudioPatch] is_android()=False, skip patch
+[BOOT] android_audio_fix patch result=False
+[18:16:11] === APP process started ===

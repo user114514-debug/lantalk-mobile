@@ -42,7 +42,7 @@ jobs:
         run: |
           for i in 1 2 3; do
             echo "===== Build attempt $i/3 ====="
-            if flet build apk --module-name mobile_main --project "LanTalk" --org "com.lantalk" --product "lantalk" --build-number "4" --build-version "3.7.2" --arch arm64-v8a; then
+            if flet build apk --module-name mobile_main --project "LanTalk" --org "com.lantalk" --product "lantalk" --build-number "6" --build-version "3.7.4" --arch arm64-v8a --icon "assets/icon.png"; then
               echo "===== Build succeeded on attempt $i ====="
               break
             fi

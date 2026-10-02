@@ -2529,7 +2529,7 @@ class MobileChatApp:
         group = self._option_group([
             self._option_row("简体中文", cur == "zh", lambda e: self._switch_lang("zh")),
             self._option_divider(),
-            self._option_row("繁體中文（中華民國臺灣省）", cur == "zh_TW", lambda e: self._switch_lang("zh_TW")),
+            self._option_row("繁體中文（中華民國）", cur == "zh_TW", lambda e: self._switch_lang("zh_TW")),
             self._option_divider(),
             self._option_row("English", cur == "en", lambda e: self._switch_lang("en")),
         ])
@@ -3301,7 +3301,9 @@ try:
                 else:
                     _trace_event("permission DENIED by user")
                     try:
-                        self._append_system(t("需要麦克风权限才能语音通话，请在系统设置中允许"))
+                        if not getattr(self, "_perm_warn_shown", False):
+                            self._perm_warn_shown = True
+                            self._append_system(t("需要麦克风权限才能语音通话，请在系统设置中允许"))
                     except Exception:
                         pass
             try:
@@ -3328,7 +3330,9 @@ try:
                 _ok = False
             if not _ok:
                 try:
-                    self._append_system(t("需要麦克风权限才能接听语音通话"))
+                    if not getattr(self, "_perm_warn_shown", False):
+                        self._perm_warn_shown = True
+                        self._append_system(t("需要麦克风权限才能接听语音通话"))
                 except Exception:
                     pass
                 return
