@@ -177,6 +177,7 @@ def patch_android_audio():
                         getattr(self._recorder, fn)()
                     except Exception:
                         pass
+                _restore_audio_mode()
 
         # ---- 安全版 Android Output ----
         class _SafeAndroidOutput:
@@ -223,6 +224,59 @@ def patch_android_audio():
                         pass
 
         # ---- 安全版 create_android ----
+        _audio_mgr_ref = [None]  # 持有 AudioManager，close 时恢复
+
+        def _setup_audio_mode():
+            """设置通话模式 + 强制扬声器，让 MIC/VOICE_COMMUNICATION 在荣耀上能录到声音。"""
+            try:
+                act = get_activity()
+                if act is None:
+                    _trace("setup_audio_mode: no activity, skip")
+                    return
+                AudioManager = autoclass("android.media.AudioManager")
+                Context = autoclass("android.content.Context")
+                am = act.getSystemService(Context.AUDIO_SERVICE)
+                if am is None:
+                    _trace("setup_audio_mode: getSystemService returned null")
+                    return
+                _audio_mgr_ref[0] = am
+                # 通话模式（VOICE_COMMUNICATION 源在此模式下正常工作）
+                try:
+                    am.setMode(3)  # AudioManager.MODE_IN_COMMUNICATION
+                    _trace("setMode(MODE_IN_COMMUNICATION) OK")
+                except Exception as e:
+                    _trace(f"setMode failed: {e!r}")
+                # 强制扬声器（免提），否则声音走听筒
+                try:
+                    am.setSpeakerphoneOn(True)
+                    _trace("setSpeakerphoneOn(true) OK")
+                except Exception as e:
+                    _trace(f"setSpeakerphoneOn failed (needs MODIFY_AUDIO_SETTINGS): {e!r}")
+                # 请求音频焦点
+                try:
+                    am.requestAudioFocus(None, 3, 1)  # STREAM_VOICE_CALL? 用 STREAM_MUSIC=3, AUDIOFOCUS_GAIN=1
+                    _trace("requestAudioFocus OK")
+                except Exception as e:
+                    _trace(f"requestAudioFocus failed: {e!r}")
+            except Exception as e:
+                _trace(f"setup_audio_mode exception: {e!r}")
+
+        def _restore_audio_mode():
+            try:
+                am = _audio_mgr_ref[0]
+                if am is not None:
+                    try:
+                        am.setMode(0)  # MODE_NORMAL
+                    except Exception:
+                        pass
+                    try:
+                        am.setSpeakerphoneOn(False)
+                    except Exception:
+                        pass
+                    _trace("audio mode restored to NORMAL")
+            except Exception:
+                pass
+
         def _safe_create_android(sample_rate, channels, frame_size_bytes):
             from jnius import autoclass
 
@@ -240,6 +294,9 @@ def patch_android_audio():
                 _trace(f"create_audio: permission check error: {e!r}")
                 print(f"[AudioFix] permission check error: {e}")
 
+            # 1.5) 设置通话模式 + 扬声器（必须在创建 AudioRecord 之前）
+            _setup_audio_mode()
+
             # 2) 创建 AudioRecord
             AudioRecord = autoclass("android.media.AudioRecord")
             AudioFormat = autoclass("android.media.AudioFormat")
@@ -252,8 +309,8 @@ def patch_android_audio():
             out_ch = AudioFormat.CHANNEL_OUT_MONO if channels == 1 else AudioFormat.CHANNEL_OUT_STEREO
             enc = AudioFormat.ENCODING_PCM_16BIT
 
-            # 用 MIC 代替 VOICE_COMMUNICATION（后者在部分设备需要通话模式会崩溃）
-            audio_source = AudioSource.MIC
+            # 通话模式已设置，用 VOICE_COMMUNICATION 源（降噪、AEC，录到真人声）
+            audio_source = AudioSource.VOICE_COMMUNICATION
 
             try:
                 min_rec = int(AudioRecord.getMinBufferSize(sample_rate, in_ch, enc))
