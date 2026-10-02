@@ -1281,7 +1281,7 @@ class MobileChatApp:
             spacing=2),
             bgcolor=ft.Colors.GREEN_50, border_radius=10, padding=ft.padding.all(10),
         )
-        return ft.Row(controls=[bubble, ft.Container(expand=True)] if m.is_self else [ft.Container(expand=True), bubble],
+        return ft.Row(controls=[ft.Container(expand=True), bubble] if m.is_self else [bubble, ft.Container(expand=True)],
                       alignment=ft.MainAxisAlignment.END if m.is_self else ft.MainAxisAlignment.START)
 
     def _build_voice_bubble(self, m):
@@ -1321,7 +1321,7 @@ class MobileChatApp:
             on_click=lambda e: self._play_voice_message(m) if m.status == "completed" else None,
             ink=True,
         )
-        return ft.Row(controls=[bubble, ft.Container(expand=True)] if m.is_self else [ft.Container(expand=True), bubble],
+        return ft.Row(controls=[ft.Container(expand=True), bubble] if m.is_self else [bubble, ft.Container(expand=True)],
                       alignment=ft.MainAxisAlignment.END if m.is_self else ft.MainAxisAlignment.START)
 
     def _build_voice_invite(self, m):
@@ -1757,11 +1757,17 @@ class MobileChatApp:
     def _on_file_picked(self, e):
         try:
             _trace_event(f"FilePicker on_result files={0 if not e.files else len(e.files)}")
+            from_drawer = getattr(self, "_picker_from_drawer", False)
             if e.files and len(e.files) > 0:
                 _trace_event(f"picked path={e.files[0].path}")
                 self._on_file_picked_path(e.files[0].path)
+                # 从文件抽屉发起且已选到文件：收起抽屉（取消选择则抽屉保持打开）
+                if from_drawer:
+                    self._close_file_drawer_now()
+            self._picker_from_drawer = False
         except Exception as ex:
             _trace_event(f"on_file_picked EXC: {ex!r}")
+            self._picker_from_drawer = False
             self._log(f"on_file_picked error: {ex}")
 
     def _show_file_send_dialog(self):
@@ -2052,9 +2058,12 @@ class MobileChatApp:
         # 抓手条（下拉关闭热区）
         grabber = ft.Container(width=42, height=5, border_radius=3,
                                bgcolor=ft.Colors.GREY_400)
+        # 透明背景是关键：Container 无背景色时 hit-test 只命中中间 42x5 小条，
+        # 设 TRANSPARENT 后整个全宽 x26 热区都能接收拖动
         grabber_area = ft.Container(
             content=ft.Row(controls=[grabber], alignment=ft.MainAxisAlignment.CENTER),
-            height=26, alignment=ft.alignment.center)
+            height=26, alignment=ft.alignment.center,
+            bgcolor=ft.Colors.TRANSPARENT)
         self._file_grabber = ft.GestureDetector(
             content=grabber_area,
             on_pan_start=lambda e: self._file_grab_start(e),
@@ -2127,16 +2136,22 @@ class MobileChatApp:
         sheet.visible = False
         self._file_drawer_cur = None
         self._file_drag_dy = 0.0
+        self._picker_from_drawer = False
 
     # ---- 抓手下拉关闭（跟手）----
     def _file_grab_start(self, e=None):
         self._file_drag_dy = 0.0
 
     def _file_grab_update(self, e=None):
-        d = getattr(e, "delta_y", None)
-        if d is None:
+        # Flet 0.86 DragUpdateEvent 没有 delta_y：垂直增量取 local_delta.y，
+        # 兜底 primary_delta（垂直 pan 时即 dy）
+        d = getattr(e, "local_delta", None)
+        dy = getattr(d, "y", None)
+        if dy is None:
+            dy = getattr(e, "primary_delta", None)
+        if dy is None:
             return
-        self._file_drag_dy = max(0.0, self._file_drag_dy + float(d))
+        self._file_drag_dy = max(0.0, self._file_drag_dy + float(dy))
         self._file_drawer_sheet.offset = ft.transform.Offset(
             0, self._file_drag_dy / self._FILE_DRAWER_H)
         try:
@@ -2290,23 +2305,33 @@ class MobileChatApp:
         self._ui(self.send_file(path))
 
     # ---- 相册 / 系统文件入口（选完直接发送）----
+    # 关键：启动系统选择器前不能改抽屉可见性，否则同步布局突变会让选择器启动中断
+    # （表现为"一点就没了"）。让选择器先弹出覆盖抽屉，选完在 on_result 里再关抽屉。
     def _file_drawer_album(self, e=None):
         self._btn_sound()
-        self._close_file_drawer_now()
-        if self._file_picker_ok and self._file_picker:
-            try:
-                self._file_picker.pick_files(file_type=ft.FilePickerFileType.IMAGE)
-            except Exception as ex:
-                self._log(f"album pick failed: {ex}")
+        if not (self._file_picker_ok and self._file_picker):
+            self._append_system(t("无法打开相册"))
+            return
+        self._picker_from_drawer = True
+        try:
+            self._file_picker.pick_files(file_type=ft.FilePickerFileType.IMAGE)
+        except Exception as ex:
+            self._picker_from_drawer = False
+            self._log(f"album pick failed: {ex}")
+            self._append_system(t("无法打开相册"))
 
     def _file_drawer_any(self, e=None):
         self._btn_sound()
-        self._close_file_drawer_now()
-        if self._file_picker_ok and self._file_picker:
-            try:
-                self._file_picker.pick_files(file_type=ft.FilePickerFileType.ANY)
-            except Exception as ex:
-                self._log(f"file pick failed: {ex}")
+        if not (self._file_picker_ok and self._file_picker):
+            self._append_system(t("无法打开文件"))
+            return
+        self._picker_from_drawer = True
+        try:
+            self._file_picker.pick_files(file_type=ft.FilePickerFileType.ANY)
+        except Exception as ex:
+            self._picker_from_drawer = False
+            self._log(f"file pick failed: {ex}")
+            self._append_system(t("无法打开文件"))
 
     async def _open_rec_panel(self):
         """从底部滑入录音抽屉（待命态）。"""
@@ -2406,7 +2431,8 @@ class MobileChatApp:
             self._recording_path = path
             self._rec_tick_running = True
             self._cancel_mode = False
-            self._press_start_y = getattr(e, "global_y", None)
+            _gp = getattr(e, "global_position", None)
+            self._press_start_y = getattr(_gp, "y", None)
             self._rec_status.value = t("录制中...")
             self._rec_status.color = ft.Colors.GREY_900
             self._set_cancel_btn(False)
@@ -2442,7 +2468,8 @@ class MobileChatApp:
         if not getattr(self, "_recording_path", None):
             return
         sy = self._press_start_y
-        cy = getattr(e, "global_y", None)
+        _gp = getattr(e, "global_position", None)
+        cy = getattr(_gp, "y", None)
         if sy is None or cy is None:
             return
         dy = sy - cy  # 上滑为正
