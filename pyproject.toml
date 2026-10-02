@@ -14,8 +14,9 @@ dependencies = [
 [tool.flet.organization]
 org = "com.lantalk"
 
-# 应用图标背景色（图标本身已有不透明背景，这里用于自适应图标蒙层/不支持透明的平台）
+# 应用图标：指定图标文件路径 + 背景色（图标本身已有不透明背景）
 [tool.flet]
+icon = "assets/icon.png"
 icon_background = "#34C759"
 
 # 打包彩色 emoji 字体（Twemoji，COLRv0）：含全部国旗、新 emoji 与 ZWJ 组合表情。
