@@ -103,7 +103,7 @@ def _mount_service(page, ctrl):
 # ---------- 底层业务模块复用（原样 import，零修改） ----------
 from client.client import ChatClient
 from client.message import recv_action
-from client.config import load_server_config, save_server_config, load_ip_mode, save_ip_mode, load_language, save_language
+from client.config import load_server_config, save_server_config, load_ip_mode, save_ip_mode, load_language, save_language, load_server_ipv6, save_remember_me, load_remember_me, clear_remember_me
 from utils.network import get_local_ipv4, get_local_ipv6, get_all_ipv6
 from utils.emoji_flags import has_flag, iter_segments, tokenize_text
 from client.ui.models import ChatMessage, FileMessage
@@ -220,6 +220,11 @@ class MobileChatApp:
         self._login_err = None
         self._login_status = None
         self._chat_root = None
+        self._offline_mode = False  # 离线模式：不连服务器，输入栏禁用
+        self._offline_reconnect_manual = False
+        self._kicked_off = False     # 被服务端踢下线后不再自动重连
+        self._offline_user = ""
+        self._offline_password = ""
         self._voice_overlay = None
         self._net_text = None
         self._nick_text = None
@@ -243,6 +248,9 @@ class MobileChatApp:
         self._audio_ring = None       # 来电循环音：Alarm03.wav
         self._audio_hangup = None     # 挂断音：Speech Misrecognition.wav
         self._active_dialog = None
+        self._playing_voice_m = None   # 正在播放的语音消息对象（None=未播放）
+        self._voice_wave = []          # 播放中声波竖条控件引用
+        self._voice_wave_running = False
         self._voice_mic_icon = None
         self._voice_speaker_btn = None
         self._pending_file_dialog = None
@@ -401,6 +409,27 @@ class MobileChatApp:
                 self._play_sound("Windows Navigation Start.wav")
         except Exception:
             pass
+
+    def _tap(self, btn, handler):
+        """给 Container 风格按钮加点击缩放反馈（0.94→1.0）+ 音效。"""
+        def _wrap(e):
+            self._btn_sound()
+            try:
+                btn.scale = 0.94
+                self.page.update()
+                import asyncio
+                async def _rebound():
+                    await asyncio.sleep(0.09)
+                    btn.scale = 1.0
+                    self.page.update()
+                self._ui(_rebound())
+            except Exception:
+                pass
+            try:
+                handler(e)
+            except Exception:
+                pass
+        return _wrap
 
     def _remount_audio_services(self):
         """重新挂载所有音频控件到页面（修复重连后点击音效失效的问题）。
@@ -673,8 +702,9 @@ class MobileChatApp:
             await _skip_to_login()
         self._ui(_auto_skip())
 
-    async def show_login(self):
+    async def show_login(self, direction="right"):
         host, port = load_server_config()
+        saved_ipv6 = load_server_ipv6()
         # 纯白背景
         _ios_gradient = None
 
@@ -693,9 +723,13 @@ class MobileChatApp:
 
         host_field = _ios_field(value=str(host), label=t("服务器地址"), hint_text=t("IPv4/域名"))
         port_field = _ios_field(value=str(port), label=t("端口"), width=110)
-        ipv6_field = _ios_field(label=t("IPv6地址（可选）"), hint_text=t("填了优先用IPv6"))
-        user_field = _ios_field(label=t("昵称"), hint_text=t("请输入昵称"))
-        pwd_field = _ios_field(label=t("密码"), hint_text=t("可留空"), password=True)
+        ipv6_field = _ios_field(value=saved_ipv6, label=t("IPv6地址（可选）"), hint_text=t("填了优先用IPv6"))
+        # 有未过期的记住登录凭证就自动回填账号密码并勾上
+        _saved_rmb = load_remember_me()
+        user_field = _ios_field(value=(_saved_rmb[0] if _saved_rmb else ""), label=t("昵称"), hint_text=t("请输入昵称"))
+        pwd_field = _ios_field(value=(_saved_rmb[1] if _saved_rmb else ""), label=t("密码"), hint_text=t("可留空"), password=True)
+        remember_chk = ft.Checkbox(label=t("记住我（7天内免登录）"), value=(_saved_rmb is not None),
+                                    active_color="#34C759")
         err_text = ft.Text("", size=14, color=ft.Colors.RED_400, text_align=ft.TextAlign.CENTER)
         status_text = ft.Text("", size=14, color=ft.Colors.GREY_600, text_align=ft.TextAlign.CENTER)
 
@@ -715,6 +749,14 @@ class MobileChatApp:
         )
         self._login_err = err_text
         self._login_status = status_text
+
+        # 离线进入按钮（默认隐藏，登录失败/超时后显示）
+        offline_btn = ft.TextButton(
+            content=ft.Text(t("离线进入（仅查看）"), size=14, color=ft.Colors.GREY_600),
+            visible=False,
+        )
+        offline_btn.on_click = lambda e: self._ui(self.show_offline_panel())
+        self._offline_btn = offline_btn
 
         def _set_busy(busy: bool):
             # Container 没有 disabled 属性，通过保存/置空 on_click 真正阻止点击
@@ -740,6 +782,7 @@ class MobileChatApp:
             ipv6_addr = (ipv6_field.value or "").strip()
             host_val = (host_field.value or "").strip() or "127.0.0.1"
             connect_host = ipv6_addr if ipv6_addr else host_val
+            self._want_remember = bool(remember_chk.value)
             try:
                 port = int(str(port_field.value or "9999").strip() or 9999)
             except (TypeError, ValueError):
@@ -754,6 +797,7 @@ class MobileChatApp:
             status_text.value = t("正在连接服务器...")
             _set_busy(True)
             self._login_buttons = (login_btn, reg_btn, _set_busy)
+            save_server_config(host_val, port, ipv6_addr)
             self.do_login(username, password, connect_host, port)
 
         def _after_register(ok, msg):
@@ -772,6 +816,7 @@ class MobileChatApp:
                     port = int(str(port_field.value or "9999").strip() or 9999)
                 except (TypeError, ValueError):
                     port = 9999
+                save_server_config(host_val, port, ipv6_addr)
                 self.do_login(uname, pwd, connect_host, port)
 
         def _do_register(e):
@@ -806,7 +851,14 @@ class MobileChatApp:
             return _wrap
 
         login_btn.on_click = _btn_tap(login_btn, _do_login)
-        reg_btn.on_click = _btn_tap(reg_btn, _do_register)
+        reg_btn.on_click = _btn_tap(reg_btn, lambda e: self._ui(self.show_register(direction="right")))
+
+        # 右上角：离线模式/服务器配置入口
+        offline_gear = ft.Container(
+            content=ft.Icon(ft.icons.TUNE, size=22, color="#34C759"),
+            width=40, height=40, border_radius=20, alignment=ft.alignment.center,
+        )
+        offline_gear.on_click = lambda e: self._ui(self.show_offline_panel())
 
         # 毛玻璃卡片
         glass_card = ft.Container(
@@ -815,6 +867,7 @@ class MobileChatApp:
                 ipv6_field,
                 user_field,
                 pwd_field,
+                remember_chk,
                 ft.Container(height=4),
                 self._build_ip_mode_row(),
                 ft.Container(height=2),
@@ -823,6 +876,7 @@ class MobileChatApp:
                 err_text, status_text,
                 ft.Container(height=4),
                 ft.Row(controls=[login_btn, reg_btn], spacing=10),
+                offline_btn,
             ], spacing=10, horizontal_alignment=ft.CrossAxisAlignment.STRETCH),
             padding=ft.padding.all(18), border_radius=24,
             bgcolor=ft.Colors.with_opacity(0.95, ft.Colors.GREY_50),
@@ -831,7 +885,8 @@ class MobileChatApp:
 
         root = ft.Container(
             content=ft.Column(controls=[
-                ft.Container(height=20),
+                ft.Row(controls=[ft.Container(expand=True), offline_gear]),
+                ft.Container(height=8),
                 ft.Icon(ft.icons.CHAT_BUBBLE, size=56, color="#34C759"),
                 ft.Text("LanTalk", size=30, weight=ft.FontWeight.BOLD, color=ft.Colors.BLACK87),
                 ft.Text(t("移动端 {VERSION}").format(VERSION=VERSION), size=13,
@@ -843,14 +898,367 @@ class MobileChatApp:
                alignment=ft.MainAxisAlignment.START, scroll=ft.ScrollMode.AUTO),
             padding=ft.padding.only(top=10, bottom=10), expand=True, bgcolor=ft.Colors.WHITE,
         )
-        await self._mount_with_fade(root)
+        await self._mount_with_fade(root, direction=direction)
+
+        # 有未过期的记住登录凭证：自动登录
+        if _saved_rmb:
+            username, password = _saved_rmb
+            host_val = (host_field.value or "").strip() or "127.0.0.1"
+            ipv6_addr = (ipv6_field.value or "").strip()
+            connect_host = ipv6_addr if ipv6_addr else host_val
+            try:
+                port = int(str(port_field.value or "9999").strip() or 9999)
+            except (TypeError, ValueError):
+                port = 9999
+            self._want_remember = True
+            status_text.value = t("正在自动登录...")
+            try: self.page.update()
+            except Exception: pass
+            save_server_config(host_val, port, ipv6_addr)
+            self.do_login(username, password, connect_host, port)
+
+    async def show_register(self, direction="right"):
+        """独立注册页：昵称+密码+注册+返回。"""
+        def _fld(**kw):
+            d = dict(expand=True, height=48, border_radius=12,
+                     border_color=ft.Colors.with_opacity(0.2, ft.Colors.GREY_400),
+                     focused_border_color="#34C759", filled=True,
+                     fill_color=ft.Colors.with_opacity(0.6, ft.Colors.WHITE),
+                     text_size=14, color=ft.Colors.GREY_900,
+                     content_padding=ft.padding.symmetric(horizontal=12, vertical=8))
+            d.update(kw)
+            return ft.TextField(**d)
+
+        user_field = _fld(label=t("昵称"), hint_text=t("请输入昵称"))
+        pwd_field = _fld(label=t("密码"), password=True, hint_text=t("请输入密码"))
+        err_text = ft.Text("", size=13, color=ft.Colors.RED_400)
+        status_text = ft.Text("", size=13, color=ft.Colors.GREY_600)
+
+        def _after_register(ok, msg):
+            err_text.value = ""
+            status_text.value = msg
+            try: self.page.update()
+            except Exception: pass
+            if ok:
+                uname = (user_field.value or "").strip()
+                pwd = pwd_field.value or ""
+                status_text.value = t("注册成功，正在自动登录...")
+                try: self.page.update()
+                except Exception: pass
+                host, port = load_server_config()
+                ipv6 = load_server_ipv6()
+                connect_host = ipv6 if ipv6 else host
+                self._want_remember = True
+                self.do_login(uname, pwd, connect_host, port)
+
+        def _do_register(_e):
+            self._btn_sound()
+            u = (user_field.value or "").strip()
+            p = pwd_field.value or ""
+            if not u:
+                err_text.value = t("请输入昵称")
+                self.page.update()
+                return
+            if len(p) < 4:
+                err_text.value = t("密码至少 4 位")
+                self.page.update()
+                return
+            err_text.value = ""
+            status_text.value = t("正在注册...")
+            self.page.update()
+            self.do_register(u, p, _after_register)
+
+        card = ft.Container(
+            content=ft.Column(controls=[user_field, pwd_field, err_text, status_text],
+                             spacing=10, horizontal_alignment=ft.CrossAxisAlignment.STRETCH),
+            padding=ft.padding.all(16), border_radius=14, bgcolor=ft.Colors.WHITE,
+            margin=ft.margin.symmetric(horizontal=16))
+        reg_btn = ft.Container(
+            content=ft.Text(t("注 册"), size=15, weight=ft.FontWeight.W_600, color=ft.Colors.WHITE,
+                            text_align=ft.TextAlign.CENTER),
+            alignment=ft.alignment.center, height=42, width=220, border_radius=12, bgcolor="#34C759")
+        reg_btn.on_click = self._tap(reg_btn, _do_register)
+        back_row = ft.Row(controls=[
+            ft.TextButton(content=ft.Text(t("返回"), color="#34C759", size=16),
+                          on_click=lambda e: self._ui(self.show_login(direction="left"))),
+            ft.Container(expand=True),
+        ])
+        root = ft.Container(
+            content=ft.Column(controls=[back_row,
+                ft.Text(t("注册账号"), size=18, weight=ft.FontWeight.W_600, color=ft.Colors.BLACK87),
+                ft.Container(height=12), card, ft.Container(height=16),
+                ft.Row(controls=[reg_btn], alignment=ft.MainAxisAlignment.CENTER),
+            ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=4, expand=True),
+            padding=ft.padding.only(top=10, bottom=10), bgcolor=ft.Colors.WHITE, expand=True)
+        await self._mount_with_fade(root, direction=direction)
+
+    async def show_offline_server_menu(self, direction="right"):
+        """离线专属子菜单：改服务器 / 改账号密码 / 重新连接。"""
+        def _row3(title, handler):
+            row = ft.Container(
+                content=ft.Row(controls=[
+                    ft.Text(title, size=16, color=ft.Colors.GREY_900, expand=True),
+                    ft.Icon(ft.icons.CHEVRON_RIGHT, size=20, color=ft.Colors.GREY_400),
+                ], spacing=10),
+                padding=ft.padding.symmetric(horizontal=16, vertical=16))
+            row.on_click = self._tap(row, handler)
+            return row
+
+        card = ft.Container(
+            content=ft.Column(controls=[
+                _row3(t("修改服务器地址/端口"), lambda e: self._ui(self.show_edit_server())),
+                ft.Divider(height=1),
+                _row3(t("修改用户名和密码"), lambda e: self._ui(self.show_edit_account())),
+                ft.Divider(height=1),
+                _row3(t("重新连接服务器"), lambda e: self._ui(self._offline_reconnect())),
+            ], spacing=0),
+            bgcolor=ft.Colors.WHITE, border_radius=14,
+            margin=ft.margin.symmetric(horizontal=16))
+
+        root = ft.Container(
+            content=ft.Column(controls=[
+                ft.Text(t("修改服务器地址/重新连接服务器"), size=18, weight=ft.FontWeight.W_600,
+                         color=ft.Colors.BLACK87),
+                ft.Container(height=12), card,
+            ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=4, expand=True),
+            padding=ft.padding.only(top=16, bottom=10), bgcolor=ft.Colors.WHITE, expand=True)
+        # 顶部返回按钮
+        back_row = ft.Row(controls=[
+            ft.TextButton(content=ft.Text(t("返回"), color="#34C759", size=16),
+                          on_click=lambda e: self._ui(self.show_settings(direction="left"))),
+            ft.Container(expand=True),
+        ])
+        root.content.controls.insert(0, back_row)
+        await self._mount_with_fade(root, direction=direction)
+
+    async def _show_offline_reconnect_fail(self, msg):
+        """离线重连失败弹窗：提示错误，留在离线模式。"""
+        dlg = ft.AlertDialog(
+            title=ft.Text(t("连接失败"), size=16, weight=ft.FontWeight.W_600),
+            content=ft.Text(msg or t("用户名或密码错误，该用户不存在"), size=14, color=ft.Colors.GREY_800),
+            actions=[
+                ft.TextButton(content=ft.Text(t("确定"), color="#34C759"),
+                              on_click=lambda e: (self.page.pop_dialog(), self._refresh_net_status_to_offline()))
+            ],
+        )
+        self.page.show_dialog(dlg)
+
+    def _refresh_net_status_to_offline(self):
+        """弹窗关闭后把网络状态文字刷成离线模式。"""
+        try:
+            if self._net_text:
+                self._net_text.value = t("当前离线模式")
+                self._net_text.color = ft.Colors.GREY_600
+            self.page.update()
+        except Exception:
+            pass
+
+    def _offline_reconnect(self):
+        """离线模式下用已填账号密码真连服务器。"""
+        u = getattr(self, "_offline_user", "")
+        p = getattr(self, "_offline_password", "")
+        host, port = load_server_config()
+        ipv6 = load_server_ipv6()
+        connect_host = ipv6 if ipv6 else host
+        # 不立即切在线：等服务端验证通过（do_login 成功分支）才设 _offline_mode=False
+        self._offline_reconnect_manual = True   # 标记：离线手动重连，失败要留回离线
+        self._auto_reconnect = False           # 手动重连失败不自动重试刷屏
+        self._want_remember = True
+        self.do_login(u, p, connect_host, port)
+
+    async def show_edit_server(self, direction="right"):
+        """修改服务器地址/端口/IPv6。"""
+        host, port = load_server_config()
+        saved_ipv6 = load_server_ipv6()
+
+        def _fld(**kw):
+            d = dict(expand=True, height=48, border_radius=12,
+                     border_color=ft.Colors.with_opacity(0.2, ft.Colors.GREY_400),
+                     focused_border_color="#34C759", filled=True,
+                     fill_color=ft.Colors.with_opacity(0.6, ft.Colors.WHITE),
+                     text_size=14, color=ft.Colors.GREY_900,
+                     content_padding=ft.padding.symmetric(horizontal=12, vertical=8))
+            d.update(kw)
+            return ft.TextField(**d)
+
+        host_field = _fld(value=str(host), label=t("服务器地址"))
+        port_field = _fld(value=str(port), label=t("端口"), width=100)
+        ipv6_field = _fld(value=saved_ipv6, label=t("IPv6地址（可选）"))
+        msg = ft.Text("", size=13, color=ft.Colors.RED_400)
+
+        def _save(_e):
+            self._btn_sound()
+            h = (host_field.value or "").strip() or "127.0.0.1"
+            v6 = (ipv6_field.value or "").strip()
+            try:
+                pn = int(str(port_field.value or "9999").strip() or 9999)
+            except (TypeError, ValueError):
+                msg.value = t("端口必须是数字")
+                self.page.update()
+                return
+            save_server_config(h, pn, v6)
+            self._ui(self.show_offline_server_menu())
+
+        card = ft.Container(
+            content=ft.Column(controls=[
+                ft.Row(controls=[host_field, port_field], spacing=8),
+                ipv6_field, msg,
+            ], spacing=10, horizontal_alignment=ft.CrossAxisAlignment.STRETCH),
+            padding=ft.padding.all(16), border_radius=14, bgcolor=ft.Colors.WHITE,
+            margin=ft.margin.symmetric(horizontal=16))
+        save_btn = ft.Container(
+            content=ft.Text(t("修 改"), size=15, weight=ft.FontWeight.W_600, color=ft.Colors.WHITE,
+                            text_align=ft.TextAlign.CENTER),
+            alignment=ft.alignment.center, height=42, width=220, border_radius=12, bgcolor="#34C759")
+        save_btn.on_click = self._tap(save_btn, _save)
+        back_row = ft.Row(controls=[
+            ft.TextButton(content=ft.Text(t("返回"), color="#34C759", size=16),
+                          on_click=lambda e: self._ui(self.show_offline_server_menu(direction="left"))),
+            ft.Container(expand=True),
+        ])
+        root = ft.Container(
+            content=ft.Column(controls=[back_row,
+                ft.Text(t("修改服务器地址/端口"), size=18, weight=ft.FontWeight.W_600, color=ft.Colors.BLACK87),
+                ft.Container(height=12), card, ft.Container(height=16),
+                ft.Row(controls=[save_btn], alignment=ft.MainAxisAlignment.CENTER),
+            ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=4, expand=True),
+            padding=ft.padding.only(top=10, bottom=10), bgcolor=ft.Colors.WHITE, expand=True)
+        await self._mount_with_fade(root, direction=direction)
+
+    async def show_edit_account(self, direction="right"):
+        """离线模式下修改用户名/密码（含记住我）。"""
+        saved_rmb = load_remember_me()
+        u0 = getattr(self, "_offline_user", "") or (saved_rmb[0] if saved_rmb else "")
+        p0 = getattr(self, "_offline_password", "") or (saved_rmb[1] if saved_rmb else "")
+
+        def _fld(**kw):
+            d = dict(expand=True, height=48, border_radius=12,
+                     border_color=ft.Colors.with_opacity(0.2, ft.Colors.GREY_400),
+                     focused_border_color="#34C759", filled=True,
+                     fill_color=ft.Colors.with_opacity(0.6, ft.Colors.WHITE),
+                     text_size=14, color=ft.Colors.GREY_900,
+                     content_padding=ft.padding.symmetric(horizontal=12, vertical=8))
+            d.update(kw)
+            return ft.TextField(**d)
+
+        user_field = _fld(value=u0, label=t("昵称"))
+        pwd_field = _fld(value=p0, label=t("密码"), password=True)
+        rmb_chk = ft.Checkbox(label=t("记住我"), value=(saved_rmb is not None), active_color="#34C759")
+        msg = ft.Text("", size=13, color=ft.Colors.RED_400)
+
+        def _save(_e):
+            self._btn_sound()
+            u = (user_field.value or "").strip()
+            p = pwd_field.value or ""
+            if not u:
+                msg.value = t("请输入昵称")
+                self.page.update()
+                return
+            self._offline_user = u
+            self._offline_password = p
+            self.client.username = u
+            if rmb_chk.value:
+                try: save_remember_me(u, p)
+                except Exception: pass
+            else:
+                try: clear_remember_me()
+                except Exception: pass
+            self._ui(self.show_offline_server_menu())
+
+        card = ft.Container(
+            content=ft.Column(controls=[user_field, pwd_field, rmb_chk, msg],
+                             spacing=10, horizontal_alignment=ft.CrossAxisAlignment.STRETCH),
+            padding=ft.padding.all(16), border_radius=14, bgcolor=ft.Colors.WHITE,
+            margin=ft.margin.symmetric(horizontal=16))
+        save_btn = ft.Container(
+            content=ft.Text(t("修 改"), size=15, weight=ft.FontWeight.W_600, color=ft.Colors.WHITE,
+                            text_align=ft.TextAlign.CENTER),
+            alignment=ft.alignment.center, height=42, width=220, border_radius=12, bgcolor="#34C759")
+        save_btn.on_click = self._tap(save_btn, _save)
+        back_row = ft.Row(controls=[
+            ft.TextButton(content=ft.Text(t("返回"), color="#34C759", size=16),
+                          on_click=lambda e: self._ui(self.show_offline_server_menu(direction="left"))),
+            ft.Container(expand=True),
+        ])
+        root = ft.Container(
+            content=ft.Column(controls=[back_row,
+                ft.Text(t("修改用户名/密码"), size=18, weight=ft.FontWeight.W_600, color=ft.Colors.BLACK87),
+                ft.Container(height=12), card, ft.Container(height=16),
+                ft.Row(controls=[save_btn], alignment=ft.MainAxisAlignment.CENTER),
+            ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=4, expand=True),
+            padding=ft.padding.only(top=10, bottom=10), bgcolor=ft.Colors.WHITE, expand=True)
+        await self._mount_with_fade(root, direction=direction)
+
+    async def show_offline_panel(self, direction="right"):
+        """离线入口页：填昵称密码，点'进入'直接进离线模式主界面（不连服务器）。"""
+        saved_rmb = load_remember_me()
+
+        def _field(**kw):
+            d = dict(expand=True, height=48, border_radius=12,
+                     border_color=ft.Colors.with_opacity(0.2, ft.Colors.GREY_400),
+                     focused_border_color="#34C759", filled=True,
+                     fill_color=ft.Colors.with_opacity(0.6, ft.Colors.WHITE),
+                     text_size=14, color=ft.Colors.GREY_900,
+                     content_padding=ft.padding.symmetric(horizontal=12, vertical=8))
+            d.update(kw)
+            return ft.TextField(**d)
+
+        user_field = _field(value=(saved_rmb[0] if saved_rmb else ""), label=t("昵称"))
+        pwd_field = _field(value=(saved_rmb[1] if saved_rmb else ""), label=t("密码"), password=True)
+        msg = ft.Text("", size=13, color=ft.Colors.RED_400)
+
+        def _enter(_e):
+            self._btn_sound()
+            u = (user_field.value or "").strip()
+            p = pwd_field.value or ""
+            if not u:
+                msg.value = t("请输入昵称")
+                self.page.update()
+                return
+            # 直接进离线模式主界面（不连服务器），记下账号密码供"重新连接"用
+            self._offline_mode = True
+            self._offline_user = u
+            self._offline_password = p
+            self.client.username = u
+            self._ui(self.show_chat())
+
+        enter_btn = ft.Container(
+            content=ft.Text(t("进 入"), size=16, weight=ft.FontWeight.W_600, color=ft.Colors.WHITE,
+                            text_align=ft.TextAlign.CENTER),
+            alignment=ft.alignment.center, height=48, border_radius=14, expand=True, bgcolor="#34C759")
+        enter_btn.on_click = self._tap(enter_btn, _enter)
+        back_btn = ft.Container(
+            content=ft.Text(t("返回登录"), size=15, color="#34C759", text_align=ft.TextAlign.CENTER),
+            alignment=ft.alignment.center, height=44, border_radius=14, expand=True,
+            bgcolor=ft.Colors.GREY_100, on_click=lambda e: self._ui(self.show_login(direction="left")))
+
+        card = ft.Container(
+            content=ft.Column(controls=[
+                user_field, pwd_field,
+                ft.Container(height=4),
+                ft.Text(t("离线模式（不连接服务器，直接进入）"), size=12,
+                         color=ft.Colors.with_opacity(0.6, ft.Colors.GREY_600)),
+                msg, enter_btn, back_btn,
+            ], spacing=10, horizontal_alignment=ft.CrossAxisAlignment.STRETCH),
+            padding=ft.padding.all(18), border_radius=20,
+            bgcolor=ft.Colors.with_opacity(0.95, ft.Colors.GREY_50),
+            margin=ft.margin.symmetric(horizontal=16))
+
+        root = ft.Container(
+            content=ft.Column(controls=[
+                ft.Container(height=20),
+                ft.Text(t("离线 / 服务器设置"), size=20, weight=ft.FontWeight.W_600, color=ft.Colors.BLACK87),
+                ft.Container(height=12), card,
+            ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=4),
+            padding=ft.padding.only(top=10, bottom=10), expand=True, bgcolor=ft.Colors.WHITE)
+        await self._mount_with_fade(root, direction=direction)
 
     def do_login(self, username, password, host, port):
         self._password = password
         self._auto_reconnect = True
         def worker():
             try:
-                save_server_config(host, port)
+                # 服务器配置已在登录前分别保存（IPv4栏/IPv6栏），这里不再用连接地址覆盖
                 self.client.set_server_addr(host, port)
                 ip_mode = load_ip_mode()
                 # IPv6地址与IP模式联动：host是IPv6格式就强制用ipv6模式，避免协议不匹配连不上
@@ -862,7 +1270,16 @@ class MobileChatApp:
                 payload = self.client.login(username, password)
                 if payload.get("ok") or payload.get("type") == "login_ok":
                     self._reconnect_attempts = 0  # 登录成功，重置重连计数
+                    self._kicked_off = False      # 重置踢下线标志
+                    self._offline_mode = False    # 服务端验证通过，正式切在线
                     self._ping_send_time = None  # 重置心跳时间戳，防看门狗误判旧连接僵死
+                    # 记住登录：勾选则存7天，不勾则清掉旧凭证
+                    if getattr(self, "_want_remember", False):
+                        try: save_remember_me(username, password)
+                        except Exception: pass
+                    else:
+                        try: clear_remember_me()
+                        except Exception: pass
                     self._init_crypto()  # 增量：初始化端到端加密会话
                     self.client.start_receive(
                         self._on_message, self._on_connection_close,
@@ -894,9 +1311,21 @@ class MobileChatApp:
         def _set():
             if self._login_err is not None:
                 self._login_err.value = msg
+                # 登录失败：显示"离线进入"按钮
+                ob = getattr(self, "_offline_btn", None)
+                if ob is not None:
+                    ob.visible = True
                 self.page.update()
             else:
                 # 重连场景：已在聊天页，_login_err 为 None，用系统消息显示
+                # 离线手动重连失败：弹提示框，留回离线模式，不自动重试
+                if getattr(self, "_offline_reconnect_manual", False):
+                    self._offline_reconnect_manual = False
+                    self._offline_mode = True
+                    try: self.client.close()
+                    except Exception: pass
+                    self._ui(self._show_offline_reconnect_fail, msg)
+                    return
                 self._append_system(f"⚠️ {msg}")
                 # 自动重连场景：本次失败后继续调度下一次重试（形成完整重试链）
                 if getattr(self, "_auto_reconnect", False) and self.client.username:
@@ -938,6 +1367,12 @@ class MobileChatApp:
 
         # 顶部状态栏（毛玻璃）
         self._net_text = ft.Text(t("延迟 --ms  丢包 --%"), size=13, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS, color=ft.Colors.with_opacity(0.6, ft.Colors.GREY_800))
+        # 顶栏专用：只显示延迟（短，不遮挡用户名）；完整延迟+丢包在设置页网络卡片
+        self._net_latency_text = ft.Text(t("--ms"), size=12, max_lines=1, color=ft.Colors.with_opacity(0.6, ft.Colors.GREY_600))
+        # 离线模式：顶栏左边显示"当前离线模式"
+        if getattr(self, "_offline_mode", False):
+            self._net_latency_text.value = t("当前离线模式")
+            self._net_latency_text.color = ft.Colors.with_opacity(0.7, ft.Colors.GREY_600)
         self._nick_text = ft.Text(self.client.username or "", size=15, weight=ft.FontWeight.W_600, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS, text_align=ft.TextAlign.RIGHT, expand=True, color=ft.Colors.GREY_900)
         settings_btn = ft.Container(
             content=ft.Icon(ft.icons.SETTINGS, size=20, color="#34C759"),
@@ -946,8 +1381,8 @@ class MobileChatApp:
         )
         settings_btn.on_click = _tap_scale(settings_btn, lambda e: self._ui(self.show_settings()))
         top_card = ft.Container(
-            content=ft.Row(controls=[ft.Container(content=self._net_text, expand=1),
-                                      ft.Container(content=self._nick_text, expand=1, alignment=ft.alignment.center_right, margin=ft.margin.symmetric(horizontal=6)),
+            content=ft.Row(controls=[self._net_latency_text,
+                                      ft.Container(content=self._nick_text, expand=True, alignment=ft.alignment.center_right, margin=ft.margin.symmetric(horizontal=6)),
                                       settings_btn],
                             vertical_alignment=ft.CrossAxisAlignment.CENTER),
             padding=ft.padding.symmetric(horizontal=14, vertical=10),
@@ -1038,6 +1473,14 @@ class MobileChatApp:
         send_btn.on_click = _tap_scale(send_btn, lambda e: self._ui(self.send_message(self._input_field.value or "")))
         self._normal_input = ft.Row(controls=[self._input_field, file_btn, self._mic_btn_inner, send_btn], spacing=6,
                                      vertical_alignment=ft.CrossAxisAlignment.CENTER)
+        # 离线模式：输入栏整排变灰，提示"当前为离线模式无法输入"
+        if getattr(self, "_offline_mode", False):
+            self._input_field.hint_text = t("当前为离线模式无法输入")
+            self._input_field.disabled = True
+            self._input_field.fill_color = ft.Colors.with_opacity(0.5, ft.Colors.GREY_200)
+            for _b in (file_btn, self._mic_btn_inner, send_btn):
+                _b.opacity = 0.4
+                _b.on_click = None
         input_card = ft.Container(
             content=self._normal_input,
             padding=ft.padding.symmetric(horizontal=10, vertical=8),
@@ -1074,15 +1517,19 @@ class MobileChatApp:
         # 初始化
         self.file_transfer = FileTransferClient(self.client)
         # 注意：不要清空 conversations，重连后需要保留历史聊天记录
-        await self.refresh_friend_list()
-        self._start_heartbeat()
-        self._start_net_ui_refresh()
-        self._start_friend_refresh()
-        # 重连后恢复历史消息到新的 message_list
-        self._refresh_messages(self.current_conv)
-        self._append_system(t("已连接到聊天室"))
-        # 重连后页面重建，重新挂载音频控件（修复点击音效失效）
-        self._remount_audio_services()
+        if getattr(self, "_offline_mode", False):
+            # 离线模式：不连服务器，跳过心跳/网络刷新/好友刷新
+            self._append_system(t("已进入离线模式，功能不可用"), "public")
+        else:
+            await self.refresh_friend_list()
+            self._start_heartbeat()
+            self._start_net_ui_refresh()
+            self._start_friend_refresh()
+            # 重连后恢复历史消息到新的 message_list
+            self._refresh_messages(self.current_conv)
+            self._append_system(t("已连接到聊天室"), "public")
+            # 重连后页面重建，重新挂载音频控件（修复点击音效失效）
+            self._remount_audio_services()
         # 重连后恢复语音房间注册（TCP断开时服务器清理了语音注册，需重新voice_join）
         if self.voice_call and getattr(self.voice_call, "_running", False):
             self._ui(self._voice_rejoin_room())
@@ -1306,11 +1753,23 @@ class MobileChatApp:
             # 可播放
             icon_color = ft.Colors.WHITE if m.is_self else "#34C759"
             dur_text = f"{dur}\"" if dur > 0 else "▶"
-            inner = ft.Row(controls=[
-                ft.Icon(ft.icons.PLAY_ARROW_ROUNDED if not m.is_self else ft.icons.PLAY_ARROW_ROUNDED,
-                        size=24, color=icon_color),
-                ft.Text(dur_text, size=15, color=icon_color, weight=ft.FontWeight.W_500),
-            ], spacing=6, alignment=ft.MainAxisAlignment.CENTER)
+            if m is self._playing_voice_m:
+                # 播放中：跳动声波竖条 + 秒数
+                bars = []
+                for i in range(4):
+                    bars.append(ft.Container(width=3, height=10, bgcolor=icon_color,
+                                             border_radius=ft.BorderRadius.all(2)))
+                self._voice_wave = bars
+                inner = ft.Row(controls=[
+                    ft.Row(controls=bars, spacing=2,
+                           alignment=ft.CrossAxisAlignment.CENTER),
+                    ft.Text(dur_text, size=15, color=icon_color, weight=ft.FontWeight.W_500),
+                ], spacing=8, alignment=ft.MainAxisAlignment.CENTER)
+            else:
+                inner = ft.Row(controls=[
+                    ft.Icon(ft.icons.PLAY_ARROW_ROUNDED, size=24, color=icon_color),
+                    ft.Text(dur_text, size=15, color=icon_color, weight=ft.FontWeight.W_500),
+                ], spacing=6, alignment=ft.MainAxisAlignment.CENTER)
         bubble = ft.Container(
             content=ft.Container(content=inner, padding=ft.padding.symmetric(horizontal=16, vertical=12)),
             border_radius=ft.BorderRadius(top_left=18, top_right=18, bottom_left=18, bottom_right=6)
@@ -1337,9 +1796,12 @@ class MobileChatApp:
             bgcolor=ft.Colors.GREEN_50, border_radius=10, padding=ft.padding.all(10),
         )
 
-    def _append_system(self, text):
-        self.conversations.setdefault("public", []).append(ChatMessage(text=text, is_system=True))
-        self._refresh_messages("public")
+    def _append_system(self, text, conv=None):
+        # 默认写到当前对话（单聊里的操作反馈就地显示，不再串到公共聊天室）；
+        # 真正的全局事件（连接/重连/加入聊天室）由调用方显式传 "public"。
+        target = conv if conv else self.current_conv
+        self.conversations.setdefault(target, []).append(ChatMessage(text=text, is_system=True))
+        self._refresh_messages(target)
 
     # ==================== 消息接收/发送 ====================
     def _localize_system(self, text):
@@ -1491,7 +1953,11 @@ class MobileChatApp:
         self._stop_net_ui_refresh()
         if self._friend_timer:
             self._friend_timer.cancel(); self._friend_timer = None
-        self._ui(self._append_system, t("⚠️ 连接已断开，正在尝试重连..."))
+        # 被服务端踢下线：坚决不自动重连（否则踢了又自己连回来，等于踢不掉）
+        if getattr(self, "_kicked_off", False):
+            self._ui(self._append_system, t("⚠️ 已被服务器踢下线"), "public")
+            return
+        self._ui(self._append_system, t("⚠️ 连接已断开，正在尝试重连..."), "public")
         if getattr(self, "_auto_reconnect", False) and self.client.username:
             self._ui(self._do_auto_reconnect)
 
@@ -1502,12 +1968,12 @@ class MobileChatApp:
         self._reconnect_attempts += 1
         attempt = self._reconnect_attempts
         if attempt > 10:
-            self._append_system(t("⚠️ 多次重连失败，请检查网络后手动重连"))
+            self._append_system(t("⚠️ 多次重连失败，请检查网络后手动重连"), "public")
             self._reconnect_attempts = 0
             return
         # 退避：2,4,6...秒，上限20秒
         delay = min(2 * attempt, 20)
-        self._append_system(t("第 {attempt}/10 次重连，{delay} 秒后尝试...").format(attempt=attempt, delay=delay))
+        self._append_system(t("第 {attempt}/10 次重连，{delay} 秒后尝试...").format(attempt=attempt, delay=delay), "public")
         def _do():
             host, port = load_server_config()
             self.do_login(self.client.username or "", self._password, host, port)
@@ -2137,6 +2603,7 @@ class MobileChatApp:
         self._file_drawer_cur = None
         self._file_drag_dy = 0.0
         self._picker_from_drawer = False
+        self._file_drawer_image_mode = False  # True=只显示图片（相册模式）
 
     # ---- 抓手下拉关闭（跟手）----
     def _file_grab_start(self, e=None):
@@ -2258,13 +2725,21 @@ class MobileChatApp:
                     ft.icons.FOLDER_OUTLINED, "#34C759", name, "",
                     lambda e, p=full: self._refresh_file_drawer_dir(p),
                     chevron=True))
+            if getattr(self, "_file_drawer_image_mode", False):
+                _IMG_EXT = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp")
+                files = [(n, p) for (n, p) in files
+                         if n.lower().endswith(_IMG_EXT)]
             for name, full in files:
                 try:
                     sz = self._fmt_size(os.path.getsize(full))
                 except Exception:
                     sz = ""
+                _is_img = name.lower().endswith(
+                    (".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"))
+                _ic = (ft.icons.IMAGE_OUTLINED if _is_img
+                       else ft.icons.INSERT_DRIVE_FILE_OUTLINED)
                 rows.append(self._file_drawer_row(
-                    ft.icons.INSERT_DRIVE_FILE_OUTLINED, ft.Colors.GREY_500,
+                    _ic, ft.Colors.GREY_500,
                     name, sz, lambda e, p=full: self._file_drawer_send(p)))
         self._file_drawer_list.controls = rows
         try:
@@ -2304,34 +2779,30 @@ class MobileChatApp:
         self._close_file_drawer()
         self._ui(self.send_file(path))
 
-    # ---- 相册 / 系统文件入口（选完直接发送）----
-    # 关键：启动系统选择器前不能改抽屉可见性，否则同步布局突变会让选择器启动中断
-    # （表现为"一点就没了"）。让选择器先弹出覆盖抽屉，选完在 on_result 里再关抽屉。
+    # ---- 相册 / 文件入口：直接切换内置浏览器模式（不依赖系统 FilePicker）----
+    def _album_start_dir(self):
+        """相册模式的起始目录：优先 DCIM/Camera 等真实图片目录。"""
+        for d in ["/storage/emulated/0/DCIM/Camera",
+                  "/storage/emulated/0/DCIM",
+                  "/storage/emulated/0/Pictures",
+                  "/storage/emulated/0/Download",
+                  "/sdcard/DCIM/Camera"]:
+            try:
+                if os.path.isdir(d) and os.listdir(d):
+                    return d
+            except Exception:
+                continue
+        return self._file_browser_start_dir()
+
     def _file_drawer_album(self, e=None):
         self._btn_sound()
-        if not (self._file_picker_ok and self._file_picker):
-            self._append_system(t("无法打开相册"))
-            return
-        self._picker_from_drawer = True
-        try:
-            self._file_picker.pick_files(file_type=ft.FilePickerFileType.IMAGE)
-        except Exception as ex:
-            self._picker_from_drawer = False
-            self._log(f"album pick failed: {ex}")
-            self._append_system(t("无法打开相册"))
+        self._file_drawer_image_mode = True
+        self._refresh_file_drawer_dir(self._album_start_dir())
 
     def _file_drawer_any(self, e=None):
         self._btn_sound()
-        if not (self._file_picker_ok and self._file_picker):
-            self._append_system(t("无法打开文件"))
-            return
-        self._picker_from_drawer = True
-        try:
-            self._file_picker.pick_files(file_type=ft.FilePickerFileType.ANY)
-        except Exception as ex:
-            self._picker_from_drawer = False
-            self._log(f"file pick failed: {ex}")
-            self._append_system(t("无法打开文件"))
+        self._file_drawer_image_mode = False
+        self._refresh_file_drawer_dir(self._file_browser_start_dir())
 
     async def _open_rec_panel(self):
         """从底部滑入录音抽屉（待命态）。"""
@@ -2574,13 +3045,42 @@ class MobileChatApp:
         self._btn_sound()
         if vmsg.is_playing():
             vmsg.stop_voice()
-            return
-        def _done():
+            self._playing_voice_m = None
+            self._voice_wave_running = False
             self._ui(self._refresh_messages, self.current_conv)
+            return
+
+        def _done():
+            self._playing_voice_m = None
+            self._voice_wave_running = False
+            self._ui(self._refresh_messages, self.current_conv)
+
+        self._playing_voice_m = m
+        self._voice_wave = []
+        # 先刷新一次，把该气泡画成"播放中声波"，再启动声波动画
+        self._ui(self._refresh_messages, self.current_conv)
         try:
             vmsg.play_voice(path, _done)
         except Exception as ex:
+            self._playing_voice_m = None
             self._append_system(t("播放失败: {e}").format(e=ex))
+            return
+        self._ui(self._start_voice_wave_loop)
+
+    async def _start_voice_wave_loop(self):
+        """播放中声波竖条高度循环跳动。"""
+        self._voice_wave_running = True
+        t = 0.0
+        while self._voice_wave_running and self._voice_wave:
+            t += 0.35
+            for i, bar in enumerate(self._voice_wave):
+                h = 6 + int(9 * abs(math.sin(t + i * 0.9)))
+                bar.height = h
+                try:
+                    bar.update()
+                except Exception:
+                    pass
+            await asyncio.sleep(0.15)
 
     # ==================== 语音通话（复用 VoiceCall + 信令） ====================
     def _get_private_room_id(self, u1, u2):
@@ -3683,15 +4183,16 @@ class MobileChatApp:
         _ios_bg = "#F2F2F7"
 
         def _row(label, on_click, color=None, right_text=None):
-            return ft.Container(
+            row = ft.Container(
                 content=ft.Row(controls=[
                     ft.Text(label, size=16, color=color or ft.Colors.BLACK),
                     ft.Container(expand=True),
                     ft.Text(right_text, size=14, color=ft.Colors.GREY_400) if right_text else ft.Container(),
                     ft.Icon(ft.icons.CHEVRON_RIGHT, size=18, color=ft.Colors.GREY_400),
                 ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                padding=ft.padding.symmetric(horizontal=16, vertical=14),
-                on_click=on_click)
+                padding=ft.padding.symmetric(horizontal=16, vertical=14))
+            row.on_click = self._tap(row, on_click)
+            return row
 
         def _div():
             return ft.Container(height=0.5, bgcolor=ft.Colors.with_opacity(0.15, ft.Colors.GREY_400),
@@ -3722,11 +4223,31 @@ class MobileChatApp:
         _theme_text = {v: k for k, v in _theme_label.items()}.get(self._theme_mode, t("跟随系统"))
         _ip_text = {"auto": t("自动"), "ipv4": t("仅IPv4"), "ipv6": t("仅IPv6")}.get(load_ip_mode(), t("自动"))
 
+        # 网络状态卡片（从顶栏移到这里，避免顶栏文字挤压用户名）
+        if getattr(self, "_offline_mode", False):
+            self._net_text.value = t("当前为离线模式")
+            self._net_text.color = ft.Colors.GREY_600
+        net_group = _group([
+            ft.Row(controls=[
+                ft.Icon(ft.icons.SIGNAL_CELLULAR_ALT, size=20, color="#34C759"),
+                ft.Text(t("网络状态"), size=15, color=ft.Colors.GREY_900, expand=True),
+                self._net_text,
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        ])
+
         account_group = _group([
             _row(t("修改密码"), lambda e: self._ui(self.show_change_password())),
             _div(),
             _row(t("修改用户名"), lambda e: self._ui(self.show_change_nickname())),
         ])
+
+        # 仅离线模式：修改服务器地址/重新连接服务器
+        offline_server_group = None
+        if getattr(self, "_offline_mode", False):
+            offline_server_group = _group([
+                _row(t("修改服务器地址/重新连接服务器"),
+                     lambda e: self._ui(self.show_offline_server_menu())),
+            ])
 
         pref_group = _group([
             _row(t("修改语言"), lambda e: self._ui(self.show_language_settings()), right_text=_lang_label),
@@ -3763,12 +4284,15 @@ class MobileChatApp:
         ver = ft.Text(t("版本 {VERSION}").format(VERSION=VERSION), size=12,
                       color=ft.Colors.GREY_400, text_align=ft.TextAlign.CENTER)
 
+        # 离线专属卡片仅在离线模式下加入，在线模式为 None 不能进 controls
+        _top_controls = [nav, ft.Container(height=4), net_group]
+        if offline_server_group is not None:
+            _top_controls.append(offline_server_group)
+        _top_controls += [account_group, pref_group, other_group, bottom_group, logout_btn,
+                          ft.Container(expand=True), ver, ft.Container(height=16)]
         root = ft.Container(
-            content=ft.Column(controls=[
-                nav, ft.Container(height=4),
-                account_group, pref_group, other_group, bottom_group, logout_btn,
-                ft.Container(expand=True), ver, ft.Container(height=16),
-            ], spacing=0, expand=True, scroll=ft.ScrollMode.AUTO),
+            content=ft.Column(controls=_top_controls,
+            spacing=0, expand=True, scroll=ft.ScrollMode.AUTO),
             bgcolor=_ios_bg, expand=True)
 
         await self._mount_with_fade(root, direction=direction)
@@ -3971,6 +4495,8 @@ class MobileChatApp:
             self._friend_timer.cancel(); self._friend_timer = None
         try: self.client.close()
         except Exception: pass
+        try: clear_remember_me()
+        except Exception: pass
         self.conversations = {}
         self.friends = []
         self._unread = {}
@@ -4017,6 +4543,7 @@ class MobileChatApp:
 
     def _on_kicked(self, reason):
         """被管理员踢出。"""
+        self._kicked_off = True   # 硬标志：连接关闭时不再自动重连
         self._auto_reconnect = False
         self._stop_heartbeat()
         self._append_system(f"⚠️ {reason}")
@@ -4046,6 +4573,10 @@ class MobileChatApp:
                     color = ft.Colors.GREEN_700 if avg < 30 else (ft.Colors.ORANGE_700 if avg <= 120 else ft.Colors.RED_600)
                     txt.value = t("延迟 {avg:.0f}ms 丢包 {pct:.0f}%").format(avg=avg, pct=loss*100)
                     txt.color = color
+                    # 顶栏小字：只显示延迟
+                    if self._net_latency_text:
+                        self._net_latency_text.value = t("{avg:.0f}ms").format(avg=avg)
+                        self._net_latency_text.color = color
                     self._ui(self.page.update)
             except Exception:
                 pass

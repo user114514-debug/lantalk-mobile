@@ -2,5 +2,6 @@
   "server_host": "127.0.0.1",
   "server_port": 9999,
   "ip_mode": "auto",
-  "language": "zh"
+  "language": "zh",
+  "server_ipv6": ""
 }

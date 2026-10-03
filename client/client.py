@@ -184,6 +184,12 @@ class ChatClient:
         self.connected = False
         try:
             if self.sock:
+                # 主动发 FIN/RST，让服务端立刻检测到断开并把用户下线，
+                # 不等 OS 的 close() 拖延。
+                try:
+                    self.sock.shutdown(socket.SHUT_RDWR)
+                except Exception:
+                    pass
                 self.sock.close()
         except Exception:
             pass

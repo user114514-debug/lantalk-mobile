@@ -280,11 +280,11 @@ async def run_test():
         app._ui = MagicMock()
 
         # --- 场景1：上滑到取消区，松开=丢弃 ---
-        app._rec_big_press(_NS(global_y=1000))
+        app._rec_big_press(_NS(global_position=_NS(y=1000)))
         assert app._recording_path == fake, "按下后未保存录音路径"
         assert app._rec_cancel_btn.visible is True, "录音开始后取消按钮应显示"
         assert len(app._rec_bars) == 23, "声纹条数应为23"
-        app._rec_big_move(_NS(global_y=850))  # 上滑150px > 90
+        app._rec_big_move(_NS(global_position=_NS(y=850)))  # 上滑150px > 90
         assert app._cancel_mode is True, "上滑超过阈值应进入取消模式"
         assert "RED" in type(app._rec_cancel_btn.bgcolor).__name__ or app._rec_cancel_btn.bgcolor == ft.Colors.RED_400, "取消按钮应变红"
         app._rec_big_release()
@@ -298,8 +298,8 @@ async def run_test():
         with open(fake, "wb") as _f:
             _f.write(b"x" * 200)  # 场景1取消时删掉了，重建
         vmsg_mod.cancel_recording.reset_mock()
-        app._rec_big_press(_NS(global_y=1000))
-        app._rec_big_move(_NS(global_y=990))  # 上滑10px，不触发
+        app._rec_big_press(_NS(global_position=_NS(y=1000)))
+        app._rec_big_move(_NS(global_position=_NS(y=990)))  # 上滑10px，不触发
         assert app._cancel_mode is False, "未达上滑阈值不应取消"
         app._rec_big_release()
         await asyncio.sleep(0.15)
@@ -344,7 +344,7 @@ async def run_test():
             # 再打开，测抓手下拉关闭
             await app._open_file_drawer()
             app._file_grab_start()
-            app._file_grab_update(_NS(delta_y=150))  # 下拉150>120
+            app._file_grab_update(_NS(local_delta=_NS(y=150)))  # 下拉150>120
             assert app._file_drag_dy == 150, "抓手未跟手累计"
             app._file_grab_end()
             await asyncio.sleep(0.35)
