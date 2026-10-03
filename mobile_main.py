@@ -115,7 +115,7 @@ from client.ui.voice_udp import (
     build_room_start, build_room_join, build_room_leave, build_room_end,
 )
 
-VERSION = "v3.7.2"
+VERSION = "v4.0.0"
 
 
 class MessageContent(ft.Container):
