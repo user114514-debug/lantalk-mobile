@@ -193,6 +193,8 @@ class MobileChatApp:
         self.friends = []                # [{"username","online"}]
         self._unread = {}                # {conv_id: 未读数}
         self._file_progress = {}         # {file_id: percent}
+        self._progress_fill_refs = {}    # {file_id: fill Container} 用于直接更新进度条动画，不重建气泡
+        self._progress_text_refs = {}    # {file_id: status Text} 用于直接更新百分比文字
         # 语音
         self.voice_call = None
         self.voice_incoming = None
@@ -1759,7 +1761,7 @@ class MobileChatApp:
         if isinstance(m, FileMessage):
             if getattr(m, "is_voice", False):
                 return self._build_voice_bubble(m)
-            return self._build_file_bubble(m)
+            return self._build_file_bubble(m, fade_in=is_last)
         if getattr(m, "is_voice_invite", False):
             return self._build_voice_invite(m)
         if m.is_system:
@@ -1841,6 +1843,37 @@ class MobileChatApp:
                 self._history_loading = False
             threading.Timer(0.3, _unlock).start()
 
+    def _update_file_progress(self, file_id, percent, status_prefix):
+        """直接更新文件进度条的 scale 和状态文字，不重建气泡，实现平滑动画。
+        status_prefix: "下载中" 或 "发送中"。"""
+        if not file_id:
+            return
+        self._file_progress[file_id] = percent
+        pct = max(0.01, min(1.0, percent / 100.0))
+        updated = False
+        fill = self._progress_fill_refs.get(file_id)
+        if fill is not None:
+            try:
+                fill.scale = ft.Scale(scale=pct, alignment=ft.alignment.center_left)
+                updated = True
+            except Exception:
+                pass
+        txt = self._progress_text_refs.get(file_id)
+        if txt is not None:
+            try:
+                txt.value = f"{status_prefix} {int(percent)}%"
+                updated = True
+            except Exception:
+                pass
+        if updated:
+            try:
+                self.page.update()
+            except Exception:
+                pass
+        else:
+            # 控件还没渲染（比如切换了会话），走完整刷新
+            self._refresh_messages(self.current_conv)
+
     def _build_msg_bubble(self, m, fade_in=False, animate_in=False):
         """消息气泡：[时间|用户名]行 + 气泡Card。
         Pixel Android 14 风格入场动画：
@@ -1914,22 +1947,24 @@ class MobileChatApp:
         animated_wrap._msg_card = bubble_card
         return animated_wrap
 
-    def _build_file_bubble(self, m):
-        """文件消息气泡：文件图标+文件名+状态+进度条+操作按钮。"""
+    def _build_file_bubble(self, m, fade_in=False):
+        """文件消息气泡：文件图标+文件名+状态+进度条+操作按钮。
+        Android 14 风格入场动画：最后一条消息滑入+缩放+淡入。"""
         progress = self._file_progress.get(m.file_id, 0)
         size_txt = self._format_file_size(m.file_size)
 
         # 状态文字和操作按钮
         status_text = ""
         action_btn = None
+        status_icon = None  # 完成/失败的圆形勾/叉图标（弹性缩放出现）
 
         if m.status == "pending":
             status_text = t("待接收")
             action_btn = ft.Container(
                 content=ft.Text(t("接收"), size=13, color=ft.Colors.WHITE, weight=ft.FontWeight.W_600),
                 bgcolor="#34C759", border_radius=14, padding=ft.padding.symmetric(horizontal=16, vertical=6),
-                on_click=lambda e: self._accept_file(m, self.current_conv),
-                ink=True,
+                animate_scale=ft.Animation(240, ft.AnimationCurve.EASE_OUT_BACK),
+                on_click=lambda e: (self._animate_btn(action_btn), self._accept_file(m, self.current_conv)),
             )
         elif m.status == "downloading":
             status_text = t("下载中 {p}%").format(p=int(progress))
@@ -1937,14 +1972,30 @@ class MobileChatApp:
             status_text = t("发送中 {p}%").format(p=int(progress))
         elif m.status == "completed":
             status_text = t("已完成")
+            # 绿色圆形 + 白色勾，初始缩小，弹性回弹出现
+            status_icon = ft.Container(
+                content=ft.Icon(ft.icons.CHECK, size=16, color=ft.Colors.WHITE),
+                width=22, height=22, border_radius=11, bgcolor="#34C759",
+                alignment=ft.alignment.center,
+                scale=ft.Scale(scale=0),
+                animate_scale=ft.Animation(380, ft.AnimationCurve.EASE_OUT_BACK),
+            )
         elif m.status == "failed":
             status_text = t("下载失败")
+            # 红色圆形 + 白色叉，初始缩小，弹性回弹出现
+            status_icon = ft.Container(
+                content=ft.Icon(ft.icons.CLOSE, size=16, color=ft.Colors.WHITE),
+                width=22, height=22, border_radius=11, bgcolor="#FF3B30",
+                alignment=ft.alignment.center,
+                scale=ft.Scale(scale=0),
+                animate_scale=ft.Animation(380, ft.AnimationCurve.EASE_OUT_BACK),
+            )
             action_btn = ft.Container(
                 content=ft.Text(t("重新下载"), size=13, color="#FF3B30", weight=ft.FontWeight.W_600),
                 bgcolor=ft.Colors.with_opacity(0.1, "#FF3B30"), border_radius=14,
                 padding=ft.padding.symmetric(horizontal=16, vertical=6),
-                on_click=lambda e: self._accept_file(m, self.current_conv),
-                ink=True,
+                animate_scale=ft.Animation(240, ft.AnimationCurve.EASE_OUT_BACK),
+                on_click=lambda e: (self._animate_btn(action_btn), self._accept_file(m, self.current_conv)),
             )
 
         # 气泡内容
@@ -1959,21 +2010,44 @@ class MobileChatApp:
         if size_txt and (m.is_self or m.status == "completed"):
             inner_controls.append(ft.Text(size_txt, size=13, color=ft.Colors.GREY_500))
 
-        # 状态行：状态文字 + 操作按钮
+        # 状态行：状态图标 + 状态文字 + 操作按钮
+        status_text_ctrl = ft.Text(status_text, size=13, color=ft.Colors.GREY_600)
+        # 注册状态文字引用，方便 on_progress 直接更新百分比而不重建气泡
+        if m.file_id and m.status in ("downloading", "uploading"):
+            self._progress_text_refs[m.file_id] = status_text_ctrl
         status_row = ft.Row(controls=[
-            ft.Text(status_text, size=13, color=ft.Colors.GREY_600),
+            status_icon if status_icon else ft.Container(width=0),
+            status_text_ctrl,
             ft.Container(expand=True),
             action_btn if action_btn else ft.Container(),
         ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER)
         inner_controls.append(status_row)
 
-        # 进度条（下载中/发送中）
+        # 圆形勾/叉弹性缩放出现：初始 scale=0，延迟触发 scale=1（EASE_OUT_BACK 回弹）
+        if status_icon is not None:
+            def _pop_status_icon(_ic=status_icon):
+                try:
+                    _ic.scale = ft.Scale(scale=1.0)
+                    self.page.update()
+                except Exception:
+                    pass
+            threading.Timer(0.15, _pop_status_icon).start()
+
+        # 进度条（下载中/发送中）：自定义 scale 动画，平滑过渡不卡顿
         if m.status in ("downloading", "uploading"):
-            inner_controls.append(ft.Container(
-                content=ft.ProgressBar(value=progress / 100 if progress > 0 else None,
-                                       bgcolor=ft.Colors.GREY_200, color="#34C759", border_radius=4),
-                height=4, border_radius=2,
-            ))
+            pct = max(0.0, min(1.0, progress / 100.0))
+            # 背景条
+            prog_bg = ft.Container(height=4, bgcolor=ft.Colors.GREY_200, border_radius=2)
+            # 填充条：从左侧 scale 缩放，带平滑动画
+            prog_fill = ft.Container(
+                height=4, bgcolor="#34C759", border_radius=2,
+                scale=ft.Scale(scale=max(0.01, pct), alignment=ft.alignment.center_left),
+                animate_scale=ft.Animation(350, ft.AnimationCurve.EASE_OUT),
+            )
+            # 注册引用，方便 on_progress 直接更新 scale 而不重建气泡
+            if m.file_id:
+                self._progress_fill_refs[m.file_id] = prog_fill
+            inner_controls.append(ft.Stack(controls=[prog_bg, prog_fill]))
 
         # 保存位置（已完成且有路径时显示）
         if m.status == "completed" and m.download_path:
@@ -1995,8 +2069,37 @@ class MobileChatApp:
             ),
         )
 
-        return ft.Row(controls=[ft.Container(expand=True), bubble] if m.is_self else [bubble, ft.Container(expand=True)],
-                      alignment=ft.MainAxisAlignment.END if m.is_self else ft.MainAxisAlignment.START)
+        row = ft.Row(controls=[ft.Container(expand=True), bubble] if m.is_self else [bubble, ft.Container(expand=True)],
+                     alignment=ft.MainAxisAlignment.END if m.is_self else ft.MainAxisAlignment.START)
+
+        # Android 14 风格入场动画（最后一条消息）
+        if fade_in:
+            if m.is_self:
+                _init_offset = ft.transform.Offset(0, 0.25)
+                _init_scale = 0.85
+            else:
+                _init_offset = ft.transform.Offset(-0.15, 0)
+                _init_scale = 0.92
+            animated_wrap = ft.Container(
+                content=row,
+                opacity=0,
+                animate_opacity=ft.Animation(260, ft.AnimationCurve.EASE_OUT_CUBIC),
+                offset=_init_offset,
+                animate_offset=ft.Animation(280, ft.AnimationCurve.EASE_OUT_CUBIC),
+                scale=ft.Scale(scale=_init_scale),
+                animate_scale=ft.Animation(280, ft.AnimationCurve.EASE_OUT_CUBIC),
+                margin=ft.margin.symmetric(vertical=1))
+            def _do_animate():
+                try:
+                    animated_wrap.opacity = 1
+                    animated_wrap.offset = ft.transform.Offset(0, 0)
+                    animated_wrap.scale = ft.Scale(scale=1.0)
+                    self.page.update()
+                except Exception:
+                    pass
+            threading.Timer(0.05, _do_animate).start()
+            return animated_wrap
+        return row
 
     def _build_voice_bubble(self, m):
         """语音消息气泡：喇叭图标 + 时长，点击播放。"""
@@ -2681,8 +2784,9 @@ class MobileChatApp:
         def on_progress(file_id, percent):
             if file_id and not fm.file_id:
                 fm.file_id = file_id
-            self._file_progress[file_id or filename] = percent
-            self._refresh_messages(self.current_conv)
+                # file_id 第一次到来，刷新一次气泡以注册进度条引用
+                self._refresh_messages(self.current_conv)
+            self._update_file_progress(fm.file_id or filename, percent, t("发送中"))
 
         def worker():
             ok, file_id, fname, err = self.file_transfer.upload_file(filepath, target_user, on_progress=on_progress)
@@ -2740,8 +2844,7 @@ class MobileChatApp:
             os.makedirs(save_dir, exist_ok=True)
 
         def on_progress(file_id, percent):
-            self._file_progress[file_id] = percent
-            self._refresh_messages(conv_id)
+            self._update_file_progress(file_id, percent, t("下载中"))
 
         def worker():
             try:
@@ -2954,14 +3057,14 @@ class MobileChatApp:
             ft.Container(expand=True, content=file_entry_btn),
         ], spacing=12)
 
-        # 路径栏：绿色"返回"（上级目录）+ 当前路径
+        # 路径栏：绿色"返回"（上级目录）+ 当前路径（相册模式下隐藏）
         self._file_drawer_back = ft.Text(t("返回"), size=16, color="#34C759")
         back_box = ft.Container(content=self._file_drawer_back,
                                 padding=ft.padding.symmetric(horizontal=10, vertical=8),
                                 on_click=lambda e: (self._btn_sound(), self._file_drawer_go_up()))
         self._file_drawer_path = ft.Text("", size=13, color=ft.Colors.GREY_600,
                                          expand=True, overflow=ft.TextOverflow.ELLIPSIS)
-        path_bar = ft.Container(
+        self._file_drawer_path_bar = ft.Container(
             content=ft.Row(controls=[back_box, self._file_drawer_path],
                            vertical_alignment=ft.CrossAxisAlignment.CENTER),
             bgcolor=ft.Colors.with_opacity(0.06, ft.Colors.GREY_500))
@@ -2970,6 +3073,16 @@ class MobileChatApp:
         # 避免 Column(scroll) 在桌面/部分机型吞掉子项点击）
         self._file_drawer_list = ft.ListView(controls=[], spacing=0,
                                              expand=True, padding=0)
+
+        # 相册缩略图网格（QQ风格，每行3列）
+        self._album_grid = ft.GridView(
+            controls=[], expand=True, runs_count=3,
+            max_extent=140, child_aspect_ratio=1.0,
+            spacing=2, run_spacing=2, padding=2)
+
+        # 可切换内容容器：文件模式放 ListView，相册模式放 GridView
+        self._file_drawer_body = ft.Container(
+            content=self._file_drawer_list, expand=True)
 
         sheet = ft.Container(
             height=self._FILE_DRAWER_H,
@@ -2981,8 +3094,8 @@ class MobileChatApp:
                 ft.Container(content=entry_row,
                              padding=ft.padding.symmetric(horizontal=16)),
                 ft.Container(height=6),
-                path_bar,
-                self._file_drawer_list,
+                self._file_drawer_path_bar,
+                self._file_drawer_body,
             ], spacing=0),
             offset=ft.transform.Offset(0, 1),
             animate_offset=ft.Animation(280, ft.AnimationCurve.EASE_OUT_CUBIC),
@@ -3220,6 +3333,116 @@ class MobileChatApp:
         self._ui(self.send_file(path))
 
     # ---- 相册 / 文件入口：直接切换内置浏览器模式（不依赖系统 FilePicker）----
+    _MEDIA_IMG_EXT = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".heic")
+    _MEDIA_VID_EXT = (".mp4", ".3gp", ".mkv", ".avi", ".mov", ".m4v", ".flv", ".wmv")
+    _ALBUM_SCAN_DIRS = [
+        "/storage/emulated/0/DCIM",
+        "/storage/emulated/0/Pictures",
+        "/storage/emulated/0/Download",
+        "/storage/emulated/0/Movies",
+        "/storage/emulated/0/WeChat",
+        "/storage/emulated/0/Tencent/MicroMsg",
+        "/storage/emulated/0/Pictures/WeiXin",
+        "/storage/emulated/0/Pictures/Screenshots",
+        "/sdcard/DCIM",
+    ]
+    _ALBUM_MAX_ITEMS = 300
+
+    def _scan_all_media(self):
+        """后台线程扫描所有图片+视频，按修改时间倒序，返回 [(path, is_video, mtime), ...]。"""
+        results = []
+        seen = set()
+        for base in self._ALBUM_SCAN_DIRS:
+            try:
+                if not os.path.isdir(base):
+                    continue
+                for root, dirs, files in os.walk(base):
+                    # 跳过隐藏目录和缓存
+                    dirs[:] = [d for d in dirs if not d.startswith('.')
+                               and d.lower() not in ('cache', 'thumbnails', '.thumbnails')]
+                    for fn in files:
+                        low = fn.lower()
+                        is_img = low.endswith(self._MEDIA_IMG_EXT)
+                        is_vid = low.endswith(self._MEDIA_VID_EXT)
+                        if not (is_img or is_vid):
+                            continue
+                        full = os.path.join(root, fn)
+                        if full in seen:
+                            continue
+                        seen.add(full)
+                        try:
+                            mt = os.path.getmtime(full)
+                        except Exception:
+                            mt = 0
+                        results.append((full, is_vid, mt))
+                        if len(results) >= self._ALBUM_MAX_ITEMS * 3:
+                            break
+                    if len(results) >= self._ALBUM_MAX_ITEMS * 3:
+                        break
+            except Exception:
+                continue
+        results.sort(key=lambda x: x[2], reverse=True)
+        return results[:self._ALBUM_MAX_ITEMS]
+
+    def _album_thumb_cell(self, path, is_video):
+        """构建一个相册缩略图格子。"""
+        if is_video:
+            # 视频：深色背景 + 播放图标
+            cell = ft.Container(
+                content=ft.Stack(controls=[
+                    ft.Container(bgcolor="#1a1a1a", expand=True),
+                    ft.Container(content=ft.Icon(ft.icons.PLAY_CIRCLE_FILL,
+                                                 size=36, color=ft.Colors.with_opacity(0.9, ft.Colors.WHITE)),
+                                 alignment=ft.alignment.center),
+                ]),
+                aspect_ratio=1.0, border_radius=4)
+        else:
+            # 图片：直接显示缩略图
+            cell = ft.Container(
+                content=ft.Image(src=path, fit="cover", gapless_playback=True),
+                aspect_ratio=1.0, border_radius=4,
+                bgcolor=ft.Colors.GREY_200)
+        cell.on_click = lambda e, p=path: self._file_drawer_send(p)
+        return cell
+
+    def _show_album_grid(self):
+        """切换到相册网格模式：隐藏路径栏，显示 GridView，后台扫描媒体。"""
+        self._file_drawer_image_mode = True
+        self._file_drawer_path_bar.visible = False
+        self._file_drawer_body.content = self._album_grid
+        self._album_grid.controls = [ft.Container(
+            content=ft.Text(t("加载中..."), size=14, color=ft.Colors.GREY_500,
+                            text_align=ft.TextAlign.CENTER),
+            padding=ft.padding.all(20))]
+        try:
+            self._file_drawer_sheet.update()
+        except Exception:
+            pass
+
+        def _scan_and_fill():
+            try:
+                items = self._scan_all_media()
+            except Exception:
+                items = []
+            async def _apply():
+                if not items:
+                    self._album_grid.controls = [ft.Container(
+                        content=ft.Text(t("没有找到照片或视频"), size=14,
+                                        color=ft.Colors.GREY_500,
+                                        text_align=ft.TextAlign.CENTER),
+                        padding=ft.padding.all(20))]
+                else:
+                    self._album_grid.controls = [
+                        self._album_thumb_cell(p, v) for p, v, _ in items]
+                try:
+                    self._file_drawer_sheet.update()
+                except Exception:
+                    pass
+            self._ui(_apply())
+
+        import threading
+        threading.Thread(target=_scan_and_fill, daemon=True).start()
+
     def _album_start_dir(self):
         """相册模式的起始目录：优先 DCIM/Camera 等真实图片目录。"""
         for d in ["/storage/emulated/0/DCIM/Camera",
@@ -3236,12 +3459,14 @@ class MobileChatApp:
 
     def _file_drawer_album(self, e=None):
         self._btn_sound()
-        self._file_drawer_image_mode = True
-        self._refresh_file_drawer_dir(self._album_start_dir())
+        self._show_album_grid()
 
     def _file_drawer_any(self, e=None):
         self._btn_sound()
         self._file_drawer_image_mode = False
+        # 切回文件列表模式：显示路径栏，显示 ListView
+        self._file_drawer_path_bar.visible = True
+        self._file_drawer_body.content = self._file_drawer_list
         self._refresh_file_drawer_dir(self._file_browser_start_dir())
 
     async def _open_rec_panel(self):
