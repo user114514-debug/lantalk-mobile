@@ -60,7 +60,7 @@ jobs:
           echo "Installed init scripts:"
           ls -la "$GRADLE_HOME/init.d/"
 
-      - name: Build APK with icon (retry + jni fix)
+      - name: Build APK (retry on failure)
         uses: nick-fields/retry@v3
         with:
           timeout_minutes: 40
@@ -69,58 +69,17 @@ jobs:
           command: |
             export PATH="$HOME/.local/bin:$PATH"
             rm -rf build/ .flet/
-            # Step 1: Let flet generate Flutter project (may fail at Gradle step)
-            flet build apk --module-name mobile_main --project "LanTalk" --org "com.lantalk" --product "lantalk" --build-number "20261003" --build-version "4.0.0" || true
-            # Step 2: Find the generated Flutter project
-            echo "=== Searching for Flutter project ==="
-            FLUTTER_DIR=$(find build -name "pubspec.yaml" -not -path "*/.dart_tool/*" | head -1 | xargs dirname 2>/dev/null || echo "")
-            echo "Flutter project dir: $FLUTTER_DIR"
-            if [ -z "$FLUTTER_DIR" ]; then
-              echo "ERROR: No Flutter project found!"
-              find build -type d -maxdepth 3 2>/dev/null || echo "build/ is empty"
-              exit 1
-            fi
-            cd "$FLUTTER_DIR"
-            # Step 3: Fix jni version - replace in EXISTING dependency_overrides
-            sed -i 's/jni: 1\.0\.0/jni: ^1.1.0/g' pubspec.yaml
-            sed -i 's/jni: "1\.0\.0"/jni: ^1.1.0/g' pubspec.yaml
-            # Step 4: Fix version in pubspec.yaml (flet may not write it correctly)
-            sed -i 's/^version: .*/version: 4.0.0+20261003/' pubspec.yaml
-            # Step 5: Find SERIOUS_PYTHON_SITE_PACKAGES dir (flet packages Python deps here)
-            echo "=== Searching for site-packages ==="
-            SP_DIR=$(find . -type d -name "site-packages" 2>/dev/null | head -1)
-            if [ -z "$SP_DIR" ]; then
-              # Try flet's python app dir
-              SP_DIR=$(find . -type d -path "*flet*python*" 2>/dev/null | head -1)
-            fi
-            if [ -z "$SP_DIR" ]; then
-              # Try .dart_tool
-              SP_DIR=$(find .dart_tool -type d -name "site-packages" 2>/dev/null | head -1)
-            fi
-            echo "site-packages dir: $SP_DIR"
-            if [ -n "$SP_DIR" ]; then
-              export SERIOUS_PYTHON_SITE_PACKAGES="$(pwd)/$SP_DIR"
-              echo "Set SERIOUS_PYTHON_SITE_PACKAGES=$SERIOUS_PYTHON_SITE_PACKAGES"
-              ls -la "$SERIOUS_PYTHON_SITE_PACKAGES" | head -5
-            else
-              echo "WARNING: site-packages not found, listing .dart_tool:"
-              find .dart_tool -maxdepth 3 -type d 2>/dev/null | head -20
-              echo "Listing android assets:"
-              find android -name "*.zip" -o -name "site-packages" 2>/dev/null | head -10
-            fi
-            # Step 6: Build APK manually
-            flutter pub get
-            flutter build apk --release --build-number 20261003 --build-name 4.0.0
-            # Step 7: Find and copy APK to workspace root
-            echo "=== Searching for APK ==="
-            APK_PATH=$(find . -name "app-release.apk" -type f 2>/dev/null | head -1)
+            # jni version override is configured in pyproject.toml [tool.flet.flutter.pubspec.dependency_overrides]
+            flet build apk --module-name mobile_main --project "LanTalk" --org "com.lantalk" --product "lantalk" --build-number "20261003" --build-version "4.0.0"
+            # Find generated APK and copy to workspace root
+            APK_PATH=$(find build -name "app-release.apk" -type f 2>/dev/null | head -1)
             echo "APK found at: $APK_PATH"
             if [ -n "$APK_PATH" ]; then
               cp "$APK_PATH" "$GITHUB_WORKSPACE/app-release.apk"
               ls -la "$GITHUB_WORKSPACE/app-release.apk"
             else
               echo "ERROR: APK not found!"
-              find . -name "*.apk" -type f 2>/dev/null
+              find build -name "*.apk" -type f 2>/dev/null
               exit 1
             fi
 

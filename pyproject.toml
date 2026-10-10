@@ -53,3 +53,9 @@ adaptive_icon_background = "#34C759"
 "android.permission.READ_MEDIA_VIDEO" = true
 "android.permission.READ_MEDIA_AUDIO" = true
 "android.permission.READ_EXTERNAL_STORAGE" = true
+
+# 强制 jni 版本为 1.1.0：jni_flutter 1.0.4+1 需要 jni ^1.1.0，
+# 但 flet 0.86.5 默认锁定 jni 1.0.0，导致构建时 Constant evaluation error。
+# 通过 pubspec 注入 dependency_overrides，让 flet build apk 一次成功。
+[tool.flet.flutter.pubspec.dependency_overrides]
+jni = "^1.1.0"
