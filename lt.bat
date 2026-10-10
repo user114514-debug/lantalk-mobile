@@ -227,33 +227,23 @@ echo           retry_on: error
 echo           command: ^|
 echo             export PATH="$HOME/.local/bin:$PATH"
 echo             rm -rf build/ .flet/
-echo             # Step 1: Let flet generate Flutter project
 echo             flet build apk --module-name mobile_main --project "LanTalk" --org "com.lantalk" --product "lantalk" --build-number "%BNUM%" --build-version "%APP_VER%" || true
-echo             # Step 2: Find generated Flutter project
-echo             FLUTTER_DIR=$(find build -name "pubspec.yaml" -not -path "*/.dart_tool/*" | head -1 | xargs dirname 2>/dev/null || echo "")
+echo             FLUTTER_DIR=$(find build -name "pubspec.yaml" -not -path "*/.dart_tool/*" | head -1 | xargs dirname 2^>/dev/null || echo "")
 echo             echo "Flutter project dir: $FLUTTER_DIR"
-echo             if [ -z "$FLUTTER_DIR" ]; then
-echo               echo "ERROR: No Flutter project found!"
-echo               exit 1
-echo             fi
-echo             # Step 3: Fix jni version - replace in EXISTING dependency_overrides
+echo             if [ -z "$FLUTTER_DIR" ]; then echo "ERROR: No Flutter project found!"; exit 1; fi
 echo             cd "$FLUTTER_DIR"
 echo             sed -i 's/jni: 1\.0\.0/jni: ^1.1.0/g' pubspec.yaml
 echo             sed -i 's/jni: "1\.0\.0"/jni: ^1.1.0/g' pubspec.yaml
-echo             # Step 4: Build APK
+echo             sed -i 's/^version: .*/version: %APP_VER%+%BNUM%/' pubspec.yaml
+echo             SP_DIR=$(find . -type d -name "site-packages" 2^>/dev/null | head -1)
+echo             if [ -z "$SP_DIR" ]; then SP_DIR=$(find .dart_tool -type d -name "site-packages" 2^>/dev/null | head -1); fi
+echo             echo "site-packages dir: $SP_DIR"
+echo             if [ -n "$SP_DIR" ]; then export SERIOUS_PYTHON_SITE_PACKAGES="$(pwd)/$SP_DIR"; echo "Set SERIOUS_PYTHON_SITE_PACKAGES=$SERIOUS_PYTHON_SITE_PACKAGES"; fi
 echo             flutter pub get
-echo             flutter build apk --release
-echo             # Step 5: Find and copy APK to workspace root
-echo             APK_PATH=$(find . -name "app-release.apk" -type f 2>/dev/null | head -1)
+echo             flutter build apk --release --build-number %BNUM% --build-name %APP_VER%
+echo             APK_PATH=$(find . -name "app-release.apk" -type f 2^>/dev/null | head -1)
 echo             echo "APK found at: $APK_PATH"
-echo             if [ -n "$APK_PATH" ]; then
-echo               cp "$APK_PATH" "$GITHUB_WORKSPACE/app-release.apk"
-echo               ls -la "$GITHUB_WORKSPACE/app-release.apk"
-echo             else
-echo               echo "ERROR: APK not found!"
-echo               find . -name "*.apk" -type f 2>/dev/null
-echo               exit 1
-echo             fi
+echo             if [ -n "$APK_PATH" ]; then cp "$APK_PATH" "$GITHUB_WORKSPACE/app-release.apk"; ls -la "$GITHUB_WORKSPACE/app-release.apk"; else echo "ERROR: APK not found!"; find . -name "*.apk" -type f 2^>/dev/null; exit 1; fi
 echo.
 echo       - name: Upload APK
 echo         uses: actions/upload-artifact@v4
