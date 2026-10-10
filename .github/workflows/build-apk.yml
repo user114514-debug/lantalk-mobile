@@ -69,7 +69,13 @@ jobs:
           command: |
             export PATH="$HOME/.local/bin:$PATH"
             rm -rf build/ .flet/
-            flet build apk --module-name mobile_main --project "LanTalk" --org "com.lantalk" --product "lantalk" --build-number "20261003" --build-version "4.0.0"
+            flet build apk --module-name mobile_main --project "LanTalk" --org "com.lantalk" --product "lantalk" --build-number "20261003" --build-version "4.0.0" || true
+            # Fix jni version mismatch: jni_flutter 1.0.4+1 needs jni ^1.1.0
+            cd build/flutter
+            printf '\ndependency_overrides:\n  jni: ^1.1.0\n' >> pubspec.yaml
+            flutter pub get
+            flutter build apk --release
+            cd ../..
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
