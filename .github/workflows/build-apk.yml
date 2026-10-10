@@ -69,26 +69,41 @@ jobs:
           command: |
             export PATH="$HOME/.local/bin:$PATH"
             rm -rf build/ .flet/
+            # Step 1: Let flet generate the Flutter project (may fail at Gradle step)
             flet build apk --module-name mobile_main --project "LanTalk" --org "com.lantalk" --product "lantalk" --build-number "20261003" --build-version "4.0.0" || true
-            # Check if flet generated the project
-            echo "=== Listing build directory ==="
-            ls -la build/ 2>/dev/null || echo "build/ not found"
-            ls -la build/flutter/ 2>/dev/null || echo "build/flutter/ not found"
-            # Fix jni version mismatch: jni_flutter 1.0.4+1 needs jni ^1.1.0
-            cd build/flutter
+            # Step 2: Find the generated Flutter project (where pubspec.yaml lives)
+            echo "=== Searching for Flutter project ==="
+            FLUTTER_DIR=$(find build -name "pubspec.yaml" -not -path "*/.dart_tool/*" | head -1 | xargs dirname 2>/dev/null || echo "")
+            echo "Flutter project dir: $FLUTTER_DIR"
+            if [ -z "$FLUTTER_DIR" ]; then
+              echo "ERROR: No Flutter project found!"
+              find build -type d -maxdepth 3 2>/dev/null || echo "build/ is empty"
+              exit 1
+            fi
+            # Step 3: Override jni version
+            cd "$FLUTTER_DIR"
             printf '\ndependency_overrides:\n  jni: ^1.1.0\n' >> pubspec.yaml
             echo "=== pubspec.yaml tail ==="
             tail -5 pubspec.yaml
+            # Step 4: Build APK manually
             flutter pub get
             flutter build apk --release
+            # Step 5: Find and copy APK to workspace root
             echo "=== Searching for APK ==="
-            find . -name "*.apk" -type f 2>/dev/null
-            cd ../..
+            APK_PATH=$(find . -name "app-release.apk" -type f 2>/dev/null | head -1)
+            echo "APK found at: $APK_PATH"
+            if [ -n "$APK_PATH" ]; then
+              cp "$APK_PATH" "$GITHUB_WORKSPACE/app-release.apk"
+              echo "APK copied to workspace root"
+              ls -la "$GITHUB_WORKSPACE/app-release.apk"
+            else
+              echo "ERROR: APK not found!"
+              find . -name "*.apk" -type f 2>/dev/null
+              exit 1
+            fi
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: lantalk-apk
-          path: |
-            build/flutter/build/app/outputs/flutter-apk/app-release.apk
-            build/flutter/build/**/*.apk
+          path: app-release.apk
