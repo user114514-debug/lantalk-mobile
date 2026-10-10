@@ -428,9 +428,9 @@ class MobileChatApp:
             pass
 
     def _safe_top(self, content):
-        """仅安卓端用SafeArea避开状态栏；桌面端直接返回内容（SafeArea在桌面端会导致布局异常）。"""
+        """仅安卓端避开状态栏；用 Container padding 替代 SafeArea（SafeArea 在 Flet 0.86.5 上 expand 可能导致内容不显示）。"""
         if _is_android():
-            return ft.SafeArea(content=content, top=True, bottom=False, expand=True)
+            return ft.Container(content=content, padding=ft.padding.only(top=28), expand=True)
         return content
 
     def _voice_sound(self, which="unlock"):
