@@ -314,7 +314,9 @@ class MobileChatApp:
                 headline_large=_ts(), headline_medium=_ts(), headline_small=_ts(),
                 display_large=_ts(), display_medium=_ts(), display_small=_ts(),
             )
-            return ft.Theme(color_scheme_seed=ft.Colors.GREEN_700, text_theme=text_theme)
+            _bg = "#1C1C1E" if is_dark else ft.Colors.WHITE
+            return ft.Theme(color_scheme_seed=ft.Colors.GREEN_700, text_theme=text_theme,
+                            scaffold_bgcolor=_bg, canvas_color=_bg)
         except Exception:
             # 旧版本不支持 text_theme/fallback 时退回无回退主题，保证可启动
             return ft.Theme(color_scheme_seed=ft.Colors.GREEN_700)
@@ -536,11 +538,6 @@ class MobileChatApp:
         page.title = "LanTalk Mobile"
         page.padding = 0
         page.spacing = 0
-        # 显式设置页面背景色，避免内容 opacity 动画未执行时透出系统灰色
-        try:
-            page.bgcolor = ft.Colors.WHITE
-        except Exception:
-            pass
         try:
             page.window.width = 400
             page.window.height = 800
@@ -552,6 +549,12 @@ class MobileChatApp:
             page.dark_theme = self._build_theme(True)
             self._load_theme_config()
             self._apply_theme_mode(self._theme_mode)
+        except Exception:
+            pass
+        # 显式设置页面背景色（放在主题之后，避免被主题覆盖），防止内容透明时透出系统灰色
+        try:
+            page.bgcolor = ft.Colors.WHITE
+            page.update()
         except Exception:
             pass
         # 文件选择：FilePicker 只挂 services（挂 overlay 会报 Unknown control）
@@ -760,9 +763,12 @@ class MobileChatApp:
             on_click=_skip_to_login,
         )
 
-        # 先渲染再淡入；兜底定时器确保 opacity 一定变成 1（防止动画/update 失效导致一直透明）
+        # 先渲染再淡入；包一层白色背景兜底，防止内容透明时透出系统灰色
         self.page.controls.clear()
-        self.page.controls.append(self._wrap_wallpaper(splash_content))
+        _splash_outer = ft.Container(
+            content=self._wrap_wallpaper(splash_content),
+            expand=True, bgcolor=ft.Colors.WHITE)
+        self.page.controls.append(_splash_outer)
         try:
             self.page.update()
         except Exception:
@@ -5368,7 +5374,7 @@ class MobileChatApp:
                 animate_scale=ft.Animation(300, ft.AnimationCurve.EASE_OUT_CUBIC),
                 opacity=0,
                 animate_opacity=ft.Animation(300, ft.AnimationCurve.EASE_OUT_CUBIC),
-                expand=True)
+                expand=True, bgcolor=ft.Colors.WHITE)
             self.page.controls.clear()
             self.page.controls.append(wrapper)
             try:
