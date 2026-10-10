@@ -536,6 +536,11 @@ class MobileChatApp:
         page.title = "LanTalk Mobile"
         page.padding = 0
         page.spacing = 0
+        # 显式设置页面背景色，避免内容 opacity 动画未执行时透出系统灰色
+        try:
+            page.bgcolor = ft.Colors.WHITE
+        except Exception:
+            pass
         try:
             page.window.width = 400
             page.window.height = 800
@@ -755,13 +760,36 @@ class MobileChatApp:
             on_click=_skip_to_login,
         )
 
-        # 先渲染再淡入
+        # 先渲染再淡入；兜底定时器确保 opacity 一定变成 1（防止动画/update 失效导致一直透明）
         self.page.controls.clear()
         self.page.controls.append(self._wrap_wallpaper(splash_content))
-        self.page.update()
-        await asyncio.sleep(0.05)
-        splash_content.opacity = 1
-        self.page.update()
+        try:
+            self.page.update()
+        except Exception:
+            pass
+
+        async def _fade_in_splash():
+            try:
+                await asyncio.sleep(0.05)
+                splash_content.opacity = 1
+                self.page.update()
+            except Exception as _fe:
+                # 动画失败：直接强制可见
+                try:
+                    splash_content.opacity = 1
+                    self.page.update()
+                except Exception:
+                    pass
+        self._ui(_fade_in_splash())
+        # 硬兜底：500ms 后无论如何强制 opacity=1
+        def _hard_fade():
+            try:
+                if splash_content.opacity != 1:
+                    splash_content.opacity = 1
+                    self.page.update()
+            except Exception:
+                pass
+        threading.Timer(0.5, _hard_fade).start()
 
         # 2秒后自动进入登录页
         async def _auto_skip():
@@ -5354,6 +5382,17 @@ class MobileChatApp:
             wrapper.scale = ft.Scale(scale=1.0)
             wrapper.opacity = 1
             self.page.update()
+            # 硬兜底：500ms 后强制 wrapper 完全可见，防止动画停在 opacity=0
+            def _hard_show():
+                try:
+                    if wrapper.opacity != 1:
+                        wrapper.opacity = 1
+                        wrapper.scale = ft.Scale(scale=1.0)
+                        wrapper.offset = ft.transform.Offset(0, 0)
+                        self.page.update()
+                except Exception:
+                    pass
+            threading.Timer(0.5, _hard_show).start()
         except Exception as e:
             self._log(f"page transition failed: {e}")
             self.page.controls.clear()
