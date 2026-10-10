@@ -363,9 +363,17 @@ class MobileChatApp:
     def _android_play(self, audio):
         """Android 异步播放 ft.Audio。支持单个Audio或Audio列表（多文件名候选，逐个尝试）。
         Flet 0.86 的 play()/seek() 是协程，必须丢进事件循环 await 才真正发声；
-        每次播放前 seek(0) 回到开头，规避 Android“只响一次、之后 play 无效”的已知问题。"""
+        每次播放前 seek(0) 回到开头，规避 Android“只响一次、之后 play 无效”的已知问题。
+        音量增强：静音时跳过，非静音时临时把媒体音量拉到最大，播放完恢复。"""
         if audio is None or self._loop is None:
             return
+        # 音量增强：检测静音 + 临时拉满媒体音量
+        try:
+            import android_sound_boost as _asb
+            if not _asb.boost_media_volume():
+                return  # 静音模式，不播放
+        except Exception:
+            _asb = None
         audios = audio if isinstance(audio, (list, tuple)) else [audio]
         async def _do():
             last = None
@@ -390,6 +398,12 @@ class MobileChatApp:
             asyncio.run_coroutine_threadsafe(_do(), self._loop)
         except Exception as e:
             self._log(f"android audio schedule failed: {e}")
+        # 播放后延迟恢复原音量
+        if _asb is not None:
+            try:
+                _asb.restore_media_volume(800)
+            except Exception:
+                pass
 
     def _android_pause(self, audio):
         """Android 异步暂停 ft.Audio（pause 也是协程）。支持单个或列表。"""
