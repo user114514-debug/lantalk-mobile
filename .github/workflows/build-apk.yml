@@ -80,11 +80,15 @@ jobs:
               find build -type d -maxdepth 3 2>/dev/null || echo "build/ is empty"
               exit 1
             fi
-            # Step 3: Override jni version
+            # Step 3: Fix jni version - modify EXISTING dependency_overrides (flet already has one)
             cd "$FLUTTER_DIR"
-            printf '\ndependency_overrides:\n  jni: ^1.1.0\n' >> pubspec.yaml
-            echo "=== pubspec.yaml tail ==="
-            tail -5 pubspec.yaml
+            echo "=== Before: dependency_overrides section ==="
+            grep -A 10 "dependency_overrides" pubspec.yaml || echo "not found"
+            # Replace jni 1.0.0 with ^1.1.0 in the existing overrides
+            sed -i 's/jni: 1\.0\.0/jni: ^1.1.0/g' pubspec.yaml
+            sed -i 's/jni: "1\.0\.0"/jni: ^1.1.0/g' pubspec.yaml
+            echo "=== After: dependency_overrides section ==="
+            grep -A 10 "dependency_overrides" pubspec.yaml || echo "not found"
             # Step 4: Build APK manually
             flutter pub get
             flutter build apk --release
