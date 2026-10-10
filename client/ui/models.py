@@ -17,6 +17,26 @@ class ChatMessage:
     timestamp: datetime = field(default_factory=datetime.now)
     is_system: bool = False         # 是否为系统提示消息
 
+    def to_dict(self):
+        return {
+            "type": "chat",
+            "text": self.text,
+            "is_self": self.is_self,
+            "sender": self.sender,
+            "timestamp": self.timestamp.isoformat(),
+            "is_system": self.is_system,
+        }
+
+    @classmethod
+    def from_dict(cls, d):
+        return cls(
+            text=d.get("text", ""),
+            is_self=d.get("is_self", False),
+            sender=d.get("sender", ""),
+            timestamp=datetime.fromisoformat(d["timestamp"]) if d.get("timestamp") else datetime.now(),
+            is_system=d.get("is_system", False),
+        )
+
 
 @dataclass
 class FileMessage:
@@ -29,9 +49,39 @@ class FileMessage:
     sender: str = ""                # 发送者昵称
     timestamp: datetime = field(default_factory=datetime.now)
     download_path: str = ""         # 下载保存路径（接收方下载后填充）
-    status: str = "pending"         # pending/downloading/completed/failed
+    status: str = "pending"         # pending/downloading/completed/failed/uploading
     is_voice: bool = False          # 是否为语音消息
     duration: float = 0.0           # 语音时长（秒）
+
+    def to_dict(self):
+        return {
+            "type": "file",
+            "filename": self.filename,
+            "file_size": self.file_size,
+            "file_id": self.file_id,
+            "is_self": self.is_self,
+            "sender": self.sender,
+            "timestamp": self.timestamp.isoformat(),
+            "download_path": self.download_path,
+            "status": self.status,
+            "is_voice": self.is_voice,
+            "duration": self.duration,
+        }
+
+    @classmethod
+    def from_dict(cls, d):
+        return cls(
+            filename=d.get("filename", ""),
+            file_size=d.get("file_size", 0),
+            file_id=d.get("file_id", ""),
+            is_self=d.get("is_self", False),
+            sender=d.get("sender", ""),
+            timestamp=datetime.fromisoformat(d["timestamp"]) if d.get("timestamp") else datetime.now(),
+            download_path=d.get("download_path", ""),
+            status=d.get("status", "pending"),
+            is_voice=d.get("is_voice", False),
+            duration=d.get("duration", 0.0),
+        )
 
 
 @dataclass

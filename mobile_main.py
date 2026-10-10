@@ -262,6 +262,8 @@ class MobileChatApp:
         self._pending_send_btn = None
         self._typewriter_active = False
         self._typewriter_cancel = False
+        # 加载本地聊天历史
+        self._load_chat_history()
 
     def _log(self, msg): print(f"[Mobile] {msg}")
 
@@ -1800,20 +1802,86 @@ class MobileChatApp:
         return animated_wrap
 
     def _build_file_bubble(self, m):
-        status_map = {"uploading": t("发送中..."), "downloading": t("下载中..."), "completed": t("完成"), "failed": t("失败"), "pending": t("待处理")}
-        size_txt = f"{m.file_size/1024:.1f} KB" if m.file_size else ""
+        """文件消息气泡：文件图标+文件名+状态+进度条+操作按钮。"""
         progress = self._file_progress.get(m.file_id, 0)
-        lines = [f"📁 {m.filename}", size_txt, status_map.get(m.status, m.status)]
-        if m.download_path:
-            lines.append(t("已保存: {path}").format(path=m.download_path))
+        size_txt = self._format_file_size(m.file_size)
+
+        # 状态文字和操作按钮
+        status_text = ""
+        action_btn = None
+
+        if m.status == "pending":
+            status_text = t("待接收")
+            action_btn = ft.Container(
+                content=ft.Text(t("接收"), size=13, color=ft.Colors.WHITE, weight=ft.FontWeight.W_600),
+                bgcolor="#34C759", border_radius=14, padding=ft.padding.symmetric(horizontal=16, vertical=6),
+                on_click=lambda e: self._accept_file(m, self.current_conv),
+                ink=True,
+            )
+        elif m.status == "downloading":
+            status_text = t("下载中 {p}%").format(p=int(progress))
+        elif m.status == "uploading":
+            status_text = t("发送中 {p}%").format(p=int(progress))
+        elif m.status == "completed":
+            status_text = t("已完成")
+        elif m.status == "failed":
+            status_text = t("下载失败")
+            action_btn = ft.Container(
+                content=ft.Text(t("重新下载"), size=13, color="#FF3B30", weight=ft.FontWeight.W_600),
+                bgcolor=ft.Colors.with_opacity(0.1, "#FF3B30"), border_radius=14,
+                padding=ft.padding.symmetric(horizontal=16, vertical=6),
+                on_click=lambda e: self._accept_file(m, self.current_conv),
+                ink=True,
+            )
+
+        # 气泡内容
+        inner_controls = [
+            ft.Row(controls=[
+                ft.Icon(ft.icons.FOLDER_ROUNDED, size=22, color="#34C759"),
+                ft.Text(m.filename, size=15, color=ft.Colors.GREY_900, weight=ft.FontWeight.W_500, expand=True, no_wrap=False),
+            ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        ]
+
+        # 文件大小（发送方或已完成时显示）
+        if size_txt and (m.is_self or m.status == "completed"):
+            inner_controls.append(ft.Text(size_txt, size=13, color=ft.Colors.GREY_500))
+
+        # 状态行：状态文字 + 操作按钮
+        status_row = ft.Row(controls=[
+            ft.Text(status_text, size=13, color=ft.Colors.GREY_600),
+            ft.Container(expand=True),
+            action_btn if action_btn else ft.Container(),
+        ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+        inner_controls.append(status_row)
+
+        # 进度条（下载中/发送中）
+        if m.status in ("downloading", "uploading"):
+            inner_controls.append(ft.Container(
+                content=ft.ProgressBar(value=progress / 100 if progress > 0 else None,
+                                       bgcolor=ft.Colors.GREY_200, color="#34C759", border_radius=4),
+                height=4, border_radius=2,
+            ))
+
+        # 保存位置（已完成且有路径时显示）
+        if m.status == "completed" and m.download_path:
+            inner_controls.append(ft.Text(
+                t("已保存: {path}").format(path=m.download_path),
+                size=12, color=ft.Colors.GREY_500, no_wrap=False,
+            ))
+
         bubble = ft.Container(
-            content=ft.Column(controls=[
-                ft.Text(x, size=15, color=ft.Colors.GREEN_800 if i == 0 else ft.Colors.GREY_600)
-                for i, x in enumerate(lines)
-            ] + ([ft.ProgressBar(value=progress/100, width=200)] if m.status in ("uploading","downloading") and progress > 0 else []),
-            spacing=2),
-            bgcolor=ft.Colors.GREEN_50, border_radius=10, padding=ft.padding.all(10),
+            content=ft.Column(controls=inner_controls, spacing=6),
+            bgcolor=ft.Colors.with_opacity(0.95, ft.Colors.WHITE) if not m.is_self else ft.Colors.GREEN_50,
+            border_radius=ft.BorderRadius(top_left=18, top_right=18, bottom_left=6 if m.is_self else 18, bottom_right=18 if m.is_self else 6),
+            padding=ft.padding.all(12),
+            width=280,
+            shadow=ft.BoxShadow(
+                spread_radius=1, blur_radius=8,
+                color=ft.Colors.with_opacity(0.08, ft.Colors.BLACK),
+                offset=ft.Offset(0, 2),
+            ),
         )
+
         return ft.Row(controls=[ft.Container(expand=True), bubble] if m.is_self else [bubble, ft.Container(expand=True)],
                       alignment=ft.MainAxisAlignment.END if m.is_self else ft.MainAxisAlignment.START)
 
@@ -1887,6 +1955,7 @@ class MobileChatApp:
         # 真正的全局事件（连接/重连/加入聊天室）由调用方显式传 "public"。
         target = conv if conv else self.current_conv
         self.conversations.setdefault(target, []).append(ChatMessage(text=text, is_system=True))
+        self._save_conv_history(target)
         self._refresh_messages(target)
 
     # ==================== 消息接收/发送 ====================
@@ -1977,6 +2046,7 @@ class MobileChatApp:
                     if _plain is not None and not is_self:
                         self.conversations[conv_id].append(
                             ChatMessage(text=_plain, is_self=is_self, sender=sender))
+                        self._save_conv_history(conv_id)
                         if conv_id != self.current_conv:
                             self._unread[conv_id] = self._unread.get(conv_id, 0) + 1
                             self._refresh_friend_chips()
@@ -1986,6 +2056,7 @@ class MobileChatApp:
                 # 自己发的私聊消息已在 send_message 中本地添加，跳过服务器回传避免重复
                 if not is_self:
                     self.conversations[conv_id].append(ChatMessage(text=text, is_self=is_self, sender=sender))
+                    self._save_conv_history(conv_id)
                     if conv_id != self.current_conv:
                         self._unread[conv_id] = self._unread.get(conv_id, 0) + 1
                         self._refresh_friend_chips()
@@ -2017,6 +2088,7 @@ class MobileChatApp:
                     if _plain is not None and not is_self:
                         self.conversations.setdefault("public", []).append(
                             ChatMessage(text=_plain, is_self=is_self, sender=sender))
+                        self._save_conv_history("public")
                         if self.current_conv == "public":
                             self._refresh_messages("public")
                     return
@@ -2025,6 +2097,7 @@ class MobileChatApp:
                     show_text = self._localize_system(actual_text) if is_system else actual_text
                     self.conversations.setdefault("public", []).append(
                         ChatMessage(text=show_text, is_self=is_self, sender=sender, is_system=is_system))
+                    self._save_conv_history("public")
                 if is_system and ("加入了聊天室" in actual_text or "离开了聊天室" in actual_text):
                     await self.refresh_friend_list()
                 if self.current_conv == "public":
@@ -2095,6 +2168,7 @@ class MobileChatApp:
             self.conversations.setdefault(self.current_conv, [])
             self.conversations[self.current_conv].append(
                 ChatMessage(text=text, is_self=True, sender=self.client.username or ""))
+            self._save_conv_history(self.current_conv)
             self._refresh_messages(self.current_conv)
             # 等气泡动画渲染完成（280ms）后播放发送音效
             threading.Timer(0.32, self._send_sound).start()
@@ -2200,6 +2274,74 @@ class MobileChatApp:
         if _is_android() or os.path.exists("/storage/emulated/0"):
             return "/storage/emulated/0/Download/LanTalkFiles"
         return os.path.join(os.path.expanduser("~"), "Downloads", "LanTalkFiles")
+
+    def _get_chat_history_dir(self):
+        """聊天历史存储目录。"""
+        base = self._get_save_dir()
+        d = os.path.join(os.path.dirname(base), "LanTalkChatHistory")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def _conv_history_path(self, conv_id):
+        """单个会话的历史文件路径。conv_id 中的特殊字符替换为下划线。"""
+        safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in conv_id)
+        return os.path.join(self._get_chat_history_dir(), f"{safe}.json")
+
+    def _load_chat_history(self):
+        """启动时加载所有会话的历史消息。"""
+        d = self._get_chat_history_dir()
+        try:
+            for fname in os.listdir(d):
+                if not fname.endswith(".json"):
+                    continue
+                conv_id = fname[:-5]
+                path = os.path.join(d, fname)
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    msgs = []
+                    for item in data:
+                        if item.get("type") == "file":
+                            msgs.append(FileMessage.from_dict(item))
+                        else:
+                            msgs.append(ChatMessage.from_dict(item))
+                    self.conversations[conv_id] = msgs
+                except Exception as e:
+                    print(f"[history] load {conv_id} failed: {e}")
+            print(f"[history] loaded {len(self.conversations)} conversations")
+        except Exception as e:
+            print(f"[history] load all failed: {e}")
+
+    def _save_conv_history(self, conv_id):
+        """保存单个会话的消息到本地 JSON。"""
+        msgs = self.conversations.get(conv_id, [])
+        if not msgs:
+            # 空会话删除文件
+            path = self._conv_history_path(conv_id)
+            if os.path.exists(path):
+                try:
+                    os.remove(path)
+                except Exception:
+                    pass
+            return
+        try:
+            data = [m.to_dict() for m in msgs]
+            path = self._conv_history_path(conv_id)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"[history] save {conv_id} failed: {e}")
+
+    def _clear_conv_history(self, conv_id):
+        """清除单个会话的内存消息和本地历史文件。"""
+        if conv_id in self.conversations:
+            del self.conversations[conv_id]
+        path = self._conv_history_path(conv_id)
+        if os.path.exists(path):
+            try:
+                os.remove(path)
+            except Exception as e:
+                print(f"[history] clear {conv_id} failed: {e}")
 
     def _pick_file(self, e):
         self._btn_sound()
@@ -2455,10 +2597,28 @@ class MobileChatApp:
         if not self.file_transfer:
             return
         voice_like = self._is_voice_filename(filename)
-        fm = FileMessage(filename=filename, file_id=file_id, is_self=False, sender=sender,
-                         status="downloading", is_voice=voice_like)
-        self.conversations.setdefault(conv_id, []).append(fm)
-        self._refresh_messages(conv_id)
+        if voice_like:
+            # 语音消息保持自动下载（即时播放）
+            fm = FileMessage(filename=filename, file_id=file_id, is_self=False, sender=sender,
+                             status="downloading", is_voice=True)
+            self.conversations.setdefault(conv_id, []).append(fm)
+            self._save_conv_history(conv_id)
+            self._refresh_messages(conv_id)
+            self._start_file_download(fm, sender, conv_id)
+        else:
+            # 普通文件：待接收状态，不自动下载
+            fm = FileMessage(filename=filename, file_id=file_id, is_self=False, sender=sender,
+                             status="pending", is_voice=False)
+            self.conversations.setdefault(conv_id, []).append(fm)
+            self._save_conv_history(conv_id)
+            self._refresh_messages(conv_id)
+            if conv_id != self.current_conv:
+                self._unread[conv_id] = self._unread.get(conv_id, 0) + 1
+                self._refresh_friend_chips()
+            self._play_notify_sound()
+
+    def _start_file_download(self, fm, sender, conv_id):
+        """开始下载文件（接收或重新下载时调用）。"""
         save_dir = self._save_dir
         try:
             os.makedirs(save_dir, exist_ok=True)
@@ -2475,7 +2635,7 @@ class MobileChatApp:
                 self.file_transfer.set_download_peer(sender)
             except Exception:
                 pass
-            ok, filepath, err = self.file_transfer.download_file(file_id, save_dir, on_progress=on_progress)
+            ok, filepath, err = self.file_transfer.download_file(fm.file_id, save_dir, on_progress=on_progress)
             if ok:
                 fm.status = "completed"
                 fm.download_path = filepath
@@ -2483,18 +2643,40 @@ class MobileChatApp:
                     fm.file_size = os.path.getsize(filepath)
                 except Exception:
                     pass
-                # 接收方无时长元数据，按文件大小估算（AAC 约 2KB/s）
-                if fm.is_voice and fm.duration <= 0:
-                    fm.duration = max(1.0, fm.file_size / 2000.0)
             else:
                 fm.status = "failed"
+            self._save_conv_history(conv_id)
             self._refresh_messages(conv_id)
         threading.Thread(target=worker, daemon=True).start()
+
+    def _accept_file(self, fm, conv_id):
+        """点击接收按钮，开始下载文件。"""
+        self._btn_sound()
+        if fm.status != "pending" and fm.status != "failed":
+            return
+        fm.status = "downloading"
+        self._save_conv_history(conv_id)
+        self._refresh_messages(conv_id)
+        self._start_file_download(fm, fm.sender, conv_id)
 
     @staticmethod
     def _is_voice_filename(fn):
         fn = (fn or "").lower()
         return fn.startswith("voice_") and (fn.endswith(".m4a") or fn.endswith(".wav"))
+
+    @staticmethod
+    def _format_file_size(size_bytes):
+        """智能文件大小格式化：B/KB/MB/GB。"""
+        if not size_bytes or size_bytes <= 0:
+            return ""
+        if size_bytes < 1024:
+            return f"{size_bytes} B"
+        elif size_bytes < 1024 * 1024:
+            return f"{size_bytes / 1024:.1f} KB"
+        elif size_bytes < 1024 * 1024 * 1024:
+            return f"{size_bytes / (1024 * 1024):.1f} MB"
+        else:
+            return f"{size_bytes / (1024 * 1024 * 1024):.2f} GB"
 
     # ---------- 按住说话（语音消息） ----------
     def _mic_btn_normal(self):
@@ -4860,12 +5042,36 @@ class MobileChatApp:
         self.do_login(self.client.username or "", self._password, host, port)
 
     def _clear_chat_history(self, e):
-        """清空所有聊天记录（公共聊天+私聊），关闭设置弹窗并提示。"""
+        """清空所有聊天记录（内存+本地文件），带确认弹窗。"""
         self._btn_sound()
-        self.conversations.clear()
-        self._refresh_messages(self.current_conv)
-        self.page.pop_dialog()
-        self._append_system(t("聊天记录已清理"))
+
+        def _do_clear(e2):
+            self.page.pop_dialog()
+            # 清空内存
+            self.conversations.clear()
+            # 删除所有本地历史文件
+            d = self._get_chat_history_dir()
+            try:
+                for fname in os.listdir(d):
+                    if fname.endswith(".json"):
+                        try:
+                            os.remove(os.path.join(d, fname))
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            self._refresh_messages(self.current_conv)
+            self._append_system(t("聊天记录已清理"))
+
+        dlg = ft.AlertDialog(
+            title=ft.Text(t("确认清理")),
+            content=ft.Text(t("确定要清空所有聊天记录吗？此操作不可恢复。")),
+            actions=[
+                ft.TextButton(t("取消"), on_click=lambda e2: self.page.pop_dialog()),
+                ft.TextButton(t("确定"), on_click=_do_clear),
+            ],
+        )
+        self.page.show_dialog(dlg)
 
     def _logout(self, e):
         self._auto_reconnect = False

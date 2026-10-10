@@ -1,98 +1,105 @@
 @echo off
-chcp 936 >nul
+chcp 65001 >nul
 cd /d "%~dp0"
 
 echo ============================================================
-echo   LanTalk �ƶ��� - һ����� APK �����͵� GitHub Actions
+echo   LanTalk Mobile - One-click APK build via GitHub Actions
 echo ============================================================
 echo.
-echo ��ǰĿ¼: %cd%
+echo Current dir: %cd%
 echo.
 
-REM ===== �� pyproject.toml ��ȡ�汾�ţ�Ψһ����Դ�����ⲻͬ����=====
+REM ===== Get version from pyproject.toml =====
 for /f "tokens=2 delims== " %%v in ('findstr /b /c:"version" pyproject.toml') do set APP_VER=%%v
 set APP_VER=%APP_VER:"=%
 if "%APP_VER%"=="" set APP_VER=4.0.0
-REM build-number ������ YYYYMMDD��ÿ�����͵�������
+REM build-number = YYYYMMDD
 set BNUM=%date:~0,4%%date:~5,2%%date:~8,2%
-echo Ӧ�ð汾: %APP_VER%   /   build-number: %BNUM%
+echo App version: %APP_VER%   /   build-number: %BNUM%
 echo.
 
-REM ========== 1. ��� Git ==========
-echo [1/9] ��� Git...
+REM ========== 1. Check Git ==========
+echo [1/9] Checking Git...
 git --version >nul 2>&1
 if errorlevel 1 (
-    echo [����] δ��⵽ Git�����Ȱ�װ��
+    echo [ERROR] Git not found. Please install:
     echo https://git-scm.com/download/win
-    echo ��װ���������б��ű���
     pause
     exit /b 1
 )
-echo   Git �Ѱ�װ
+echo   Git installed
 
-REM ========== 2. ���� Git �û���Ϣ ==========
-echo [2/9] ���� Git �û���Ϣ...
+REM ========== 2. Check Git user config ==========
+echo [2/9] Checking Git user config...
 git config --global user.name >nul 2>&1
 if errorlevel 1 (
-    echo   δ�����û�����ʹ��Ĭ��...
+    echo   No user.name, using default...
     git config --global user.name "user114514-debug"
 )
 git config --global user.email >nul 2>&1
 if errorlevel 1 (
-    echo   δ�������䣬ʹ��Ĭ��...
+    echo   No user.email, using default...
     git config --global user.email "user114514@example.com"
 )
-echo   �û���Ϣ�Ѿ���
+echo   User config OK
 
-REM ========== 3. ȷ����Ŀ�ļ��� assets��ȱ���ֻ��˻����==========
-echo [3/9] �����Ŀ�ļ��� assets...
+REM ========== 3. Check project files ==========
+echo [3/9] Checking project files...
 set MISSING=0
 if not exist mobile_main.py (
-    echo   [ȱʧ] mobile_main.py
+    echo   [MISSING] mobile_main.py
     set MISSING=1
 )
 if not exist pyproject.toml (
-    echo   [ȱʧ] pyproject.toml��flet build �������� APK ������
+    echo   [MISSING] pyproject.toml
     set MISSING=1
 )
 if not exist assets\icon.png (
-    echo   [ȱʧ] assets\icon.png��Ӧ��ͼ�꣩
+    echo   [MISSING] assets\icon.png (app icon)
     set MISSING=1
 )
 if not exist assets\fonts\Twemoji.ttf (
-    echo   [ȱʧ] assets\fonts\Twemoji.ttf��emoji/����������壩
+    echo   [MISSING] assets\fonts\Twemoji.ttf (emoji font)
     set MISSING=1
 )
 if not exist assets\flags\ (
-    echo   [ȱʧ] assets\flags\������ PNG Ŀ¼��
+    echo   [MISSING] assets\flags\ (flag PNG dir)
     set MISSING=1
 )
 if not exist scripts\desugaring-init.gradle (
-    echo   [ȱʧ] scripts\desugaring-init.gradle (Gradle desugaring, ȱʧ�ṹ��ʧ��)
+    echo   [MISSING] scripts\desugaring-init.gradle
     set MISSING=1
 )
 if not exist android_perms.py (
-    echo   [ȱʧ] android_perms.py (��׿�ԴʱȨ��ģ��)
+    echo   [MISSING] android_perms.py
     set MISSING=1
 )
 if not exist client\ (
-    echo   [ȱʧ] client\ (�ͻ��˺��Ĵ�����)
+    echo   [MISSING] client\ (client core)
     set MISSING=1
 )
 if not exist wallpapers\ (
-    echo   [ȱʧ] wallpapers\ (����Ŀ¼)
+    echo   [MISSING] wallpapers\ (wallpaper dir)
+    set MISSING=1
+)
+if not exist assets\Pixel-Unlock.ogg (
+    echo   [MISSING] assets\Pixel-Unlock.ogg (voice start sound)
+    set MISSING=1
+)
+if not exist assets\Pixel-Lock.ogg (
+    echo   [MISSING] assets\Pixel-Lock.ogg (voice end sound)
     set MISSING=1
 )
 if "%MISSING%"=="1" (
     echo.
-    echo [����] �ؼ��ļ�ȱʧ���鿴������б��ɾ�����ٿ�͡�
+    echo [ERROR] Critical files missing. Check list above.
     pause
     exit /b 1
 )
-echo   mobile_main.py / pyproject.toml / icon.png / Twemoji.ttf / flags/ / desugaring-init.gradle / android_perms.py / client/ / wallpapers/ ȫ������
+echo   All files present
 
-REM ========== 4. ����/��ȫ requirements.txt�������ֻ���������==========
-echo [4/9] ��� requirements.txt...
+REM ========== 4. Check/create requirements.txt ==========
+echo [4/9] Checking requirements.txt...
 if not exist requirements.txt (
     echo flet==0.86.5 > requirements.txt
     echo flet-audio>=0.86.0 >> requirements.txt
@@ -100,16 +107,15 @@ if not exist requirements.txt (
     echo cryptography>=42.0.0 >> requirements.txt
     echo pyjnius>=1.6.1 >> requirements.txt
     echo psutil>=7.0.0 >> requirements.txt
-    echo # �������ר�ã������ APK����׿��ԭ�� MediaRecorder/pyjnius����>> requirements.txt
     echo sounddevice>=0.4.6 >> requirements.txt
     echo numpy>=1.26.0 >> requirements.txt
-    echo   ������ requirements.txt������������
+    echo   Created requirements.txt
 ) else (
-    echo   requirements.txt: ����
+    echo   requirements.txt exists
 )
 
-REM ========== 5. ���� .gitignore ==========
-echo [5/9] ���� .gitignore...
+REM ========== 5. Generate .gitignore ==========
+echo [5/9] Generating .gitignore...
 (
 echo __pycache__/
 echo *.pyc
@@ -133,22 +139,22 @@ echo out_*.txt
 echo *_trace.txt
 echo voice_tmp/
 ) > .gitignore
-echo   .gitignore �Ѹ��£��ų�������־�����ԡ���ʱ���Խű���voice_tmp��
+echo   .gitignore updated
 
-REM ========== 6. ����ǰ�Լ죨�﷨ + ����������==========
-echo [6/9] ����ǰ�Լ�...
+REM ========== 6. Pre-build self-check ==========
+echo [6/9] Running self-check...
 python -m py_compile mobile_main.py
 if errorlevel 1 (
-    echo   [����] mobile_main.py �﷨���ʧ�ܣ��޸��������͡�
+    echo   [ERROR] mobile_main.py syntax check FAILED
     pause
     exit /b 1
 )
-echo   mobile_main.py �﷨���ͨ��
+echo   mobile_main.py syntax OK
 for /f %%a in ('dir /b assets\flags\*.png 2^>nul ^| find /c /v ""') do set FLAG_COUNT=%%a
-echo   ���� PNG ����: %FLAG_COUNT%��ӦΪ 259��
+echo   Flag PNG count: %FLAG_COUNT%
 
-REM ========== 7. ���� GitHub Actions workflow ==========
-echo [7/9] ���� GitHub Actions ����...
+REM ========== 7. Generate GitHub Actions workflow ==========
+echo [7/9] Generating GitHub Actions workflow...
 if not exist .github\workflows mkdir .github\workflows
 del .github\workflows\build-apk.yml >nul 2>&1
 (
@@ -187,7 +193,7 @@ echo         uses: actions/setup-python@v5
 echo         with:
 echo           python-version: '3.12'
 echo.
-echo       - name: Install Flet CLI ^(retry on network flake^)
+echo       - name: Install Flet CLI ^(retry^)
 echo         uses: nick-fields/retry@v3
 echo         with:
 echo           timeout_minutes: 5
@@ -211,10 +217,8 @@ echo         run: ^|
 echo           GRADLE_HOME="${GRADLE_USER_HOME:-$HOME/.gradle}"
 echo           mkdir -p "$GRADLE_HOME/init.d"
 echo           cp scripts/desugaring-init.gradle "$GRADLE_HOME/init.d/"
-echo           echo "Installed init scripts:"
-echo           ls -la "$GRADLE_HOME/init.d/"
 echo.
-echo       - name: Build APK with icon ^(retry + clean cache on failure^)
+echo       - name: Build APK ^(retry + jni fix^)
 echo         uses: nick-fields/retry@v3
 echo         with:
 echo           timeout_minutes: 40
@@ -223,75 +227,94 @@ echo           retry_on: error
 echo           command: ^|
 echo             export PATH="$HOME/.local/bin:$PATH"
 echo             rm -rf build/ .flet/
+echo             # Step 1: Let flet generate Flutter project
 echo             flet build apk --module-name mobile_main --project "LanTalk" --org "com.lantalk" --product "lantalk" --build-number "%BNUM%" --build-version "%APP_VER%" || true
-echo             # Fix jni version mismatch: jni_flutter 1.0.4+1 needs jni ^1.1.0
-echo             cd build/flutter
-echo             printf '\ndependency_overrides:\n  jni: ^1.1.0\n' >> pubspec.yaml
+echo             # Step 2: Find generated Flutter project
+echo             FLUTTER_DIR=$(find build -name "pubspec.yaml" -not -path "*/.dart_tool/*" | head -1 | xargs dirname 2>/dev/null || echo "")
+echo             echo "Flutter project dir: $FLUTTER_DIR"
+echo             if [ -z "$FLUTTER_DIR" ]; then
+echo               echo "ERROR: No Flutter project found!"
+echo               exit 1
+echo             fi
+echo             # Step 3: Fix jni version - replace in EXISTING dependency_overrides
+echo             cd "$FLUTTER_DIR"
+echo             sed -i 's/jni: 1\.0\.0/jni: ^1.1.0/g' pubspec.yaml
+echo             sed -i 's/jni: "1\.0\.0"/jni: ^1.1.0/g' pubspec.yaml
+echo             # Step 4: Build APK
 echo             flutter pub get
 echo             flutter build apk --release
-echo             cd ../..
+echo             # Step 5: Find and copy APK to workspace root
+echo             APK_PATH=$(find . -name "app-release.apk" -type f 2>/dev/null | head -1)
+echo             echo "APK found at: $APK_PATH"
+echo             if [ -n "$APK_PATH" ]; then
+echo               cp "$APK_PATH" "$GITHUB_WORKSPACE/app-release.apk"
+echo               ls -la "$GITHUB_WORKSPACE/app-release.apk"
+echo             else
+echo               echo "ERROR: APK not found!"
+echo               find . -name "*.apk" -type f 2>/dev/null
+echo               exit 1
+echo             fi
 echo.
 echo       - name: Upload APK
 echo         uses: actions/upload-artifact@v4
 echo         with:
 echo           name: lantalk-apk
-echo           path: build/flutter/build/app/outputs/flutter-apk/app-release.apk
+echo           path: app-release.apk
 ) > .github\workflows\build-apk.yml
-echo   build-apk.yml �����ɣ�v%APP_VER% / build %BNUM% / ��ͼ�� / ������ requirements.txt��
+echo   build-apk.yml generated: v%APP_VER% / build %BNUM%
 
-REM ========== 8. ��ʼ�� Git ���ύ ==========
-echo [8/9] ��ʼ�� Git ���ύ...
+REM ========== 8. Git commit ==========
+echo [8/9] Committing to Git...
 if not exist .git (
     git init
     git branch -M main
-    echo   �ѳ�ʼ�� Git �ֿ�
+    echo   Git repo initialized
 ) else (
-    echo   Git �ֿ��Ѵ���
+    echo   Git repo exists
 )
 git add .
-git commit -m "LanTalk mobile v%APP_VER% - wallpaper picker + voice msg + offline mode + i18n + safe area" >nul 2>&1
+git commit -m "LanTalk mobile v%APP_VER% - file receive confirm + local history + file bubble UI + wallpaper picker + voice msg + offline mode" >nul 2>&1
 if errorlevel 1 (
-    echo   û���µĸĶ���Ҫ�ύ
+    echo   No new changes to commit
 ) else (
-    echo   ���ύ�Ķ�
+    echo   Committed
 )
 
-REM ========== 9. ���͵�Զ�ֿ̲� ==========
-echo [9/9] ���͵� GitHub...
+REM ========== 9. Push to GitHub ==========
+echo [9/9] Pushing to GitHub...
 git remote remove origin >nul 2>&1
 git remote add origin https://github.com/user114514-debug/lantalk-mobile.git
 git push -f -u origin main
 
 if errorlevel 1 (
     echo.
-    echo [����] ����ʧ�ܣ�
-    echo ����ԭ��
-    echo   1. ��Ҫ��¼ GitHub���״����ͻᵯ����¼���ڣ�
-    echo   2. ��������
+    echo [ERROR] Push failed!
+    echo Possible causes:
+    echo   1. Need to login GitHub (first push will prompt)
+    echo   2. Network issue
     echo.
     pause
     exit /b 1
 )
 
-REM ========== ��� ==========
+REM ========== Done ==========
 echo.
 echo ============================================================
-echo   ���ͳɹ���GitHub Actions ���ڹ��� APK
+echo   Push successful! GitHub Actions is building APK now
 echo ============================================================
 echo.
-echo   �汾: %APP_VER% (build %BNUM%)
-echo   Ԥ����Ҫ 8-10 ���ӡ�
+echo   Version: %APP_VER% (build %BNUM%)
+echo   Estimated time: 8-10 minutes
 echo.
-echo   �鿴����״̬��
+echo   Check build status:
 echo   https://github.com/user114514-debug/lantalk-mobile/actions
 echo.
-echo   ������ɺ�
-echo   1. �����ɫ �� ������
-echo   2. �����ײ� Artifacts
-echo   3. ���� lantalk-apk
-echo   4. ��ѹ�õ� app-release.apk
-echo   5. �����ֻ���װ����
+echo   After build completes:
+echo   1. Click the green checkmark
+echo   2. Scroll to Artifacts
+echo   3. Download lantalk-apk
+echo   4. Unzip to get app-release.apk
+echo   5. Install on phone
 echo.
-echo   ���ڴ� Actions ҳ��...
 pause >nul
 start https://github.com/user114514-debug/lantalk-mobile/actions
