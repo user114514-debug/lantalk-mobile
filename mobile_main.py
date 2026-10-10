@@ -103,12 +103,13 @@ def _mount_service(page, ctrl):
 # ---------- 底层业务模块复用（原样 import，零修改） ----------
 from client.client import ChatClient
 from client.message import recv_action
-from client.config import load_server_config, save_server_config, load_ip_mode, save_ip_mode, load_language, save_language, load_server_ipv6, save_remember_me, load_remember_me, clear_remember_me
+from client.config import load_server_config, save_server_config, load_ip_mode, save_ip_mode, load_language, save_language, load_server_ipv6, save_remember_me, load_remember_me, clear_remember_me, load_wallpaper_enabled, save_wallpaper_enabled, load_wallpaper_file, save_wallpaper_file
 from utils.network import get_local_ipv4, get_local_ipv6, get_all_ipv6
 from utils.emoji_flags import has_flag, iter_segments, tokenize_text
 from client.ui.models import ChatMessage, FileMessage
 import android_voice_message as vmsg
 from client.ui.file_transfer import FileTransferClient
+from client.encrypted_file_transfer import EncryptedFileTransferClient
 from client.ui.voice_udp import (
     VoiceCall, parse_voice_signal,
     build_voice_start, build_voice_accept, build_voice_reject, build_voice_end,
@@ -247,6 +248,9 @@ class MobileChatApp:
         self._audio_dial = None       # 拨号音：Alarm08.wav（播2次）
         self._audio_ring = None       # 来电循环音：Alarm03.wav
         self._audio_hangup = None     # 挂断音：Speech Misrecognition.wav
+        self._audio_voice_unlock = None  # 语音开始录音提示音：Pixel-Unlock
+        self._audio_voice_lock = None    # 语音结束录音提示音：Pixel-Lock
+        self._audio_send = None          # 消息发送成功提示音：Pixel-send
         self._active_dialog = None
         self._playing_voice_m = None   # 正在播放的语音消息对象（None=未播放）
         self._voice_wave = []          # 播放中声波竖条控件引用
@@ -399,28 +403,77 @@ class MobileChatApp:
             pass
 
     def _btn_sound(self):
-        """按钮点击音效：安卓用ft.Audio，Windows用winsound。"""
+        """按钮点击音效：安卓用ft.Audio(mp3)，Windows用winsound(wav)。100ms防抖，避免重复播放。"""
         try:
+            import time
+            now = time.time()
+            last = getattr(self, '_last_btn_sound_time', 0)
+            if now - last < 0.1:
+                return  # 100ms内重复调用，跳过
+            self._last_btn_sound_time = now
             if _is_android():
-                # 重连后页面重建可能导致音频控件从 page.services 丢失，先兜底重新挂载
                 self._remount_audio_services()
                 self._android_play(self._audio_click)
             else:
-                self._play_sound("Windows Navigation Start.wav")
+                import winsound
+                wav = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   "Pixel7-Effect-Tick.wav")
+                if os.path.exists(wav):
+                    winsound.PlaySound(wav, winsound.SND_FILENAME | winsound.SND_ASYNC)
+        except Exception:
+            pass
+
+    def _safe_top(self, content):
+        """仅安卓端用SafeArea避开状态栏；桌面端直接返回内容（SafeArea在桌面端会导致布局异常）。"""
+        if _is_android():
+            return ft.SafeArea(content=content, top=True, bottom=False, expand=True)
+        return content
+
+    def _voice_sound(self, which="unlock"):
+        """语音录音开始/结束提示音。which='unlock'=开始，'lock'=结束。"""
+        try:
+            if _is_android():
+                self._remount_audio_services()
+                if which == "unlock":
+                    self._android_play(self._audio_voice_unlock)
+                else:
+                    self._android_play(self._audio_voice_lock)
+            else:
+                import winsound
+                fname = "Pixel-Unlock.wav" if which == "unlock" else "Pixel-Lock.wav"
+                wav = os.path.join(os.path.dirname(os.path.abspath(__file__)), fname)
+                if os.path.exists(wav):
+                    winsound.PlaySound(wav, winsound.SND_FILENAME | winsound.SND_ASYNC)
+        except Exception:
+            pass
+
+    def _send_sound(self):
+        """消息发送成功提示音（气泡渲染完成后播放）。"""
+        try:
+            if _is_android():
+                self._remount_audio_services()
+                self._android_play(self._audio_send)
+            else:
+                import winsound
+                wav = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Pixel-send.wav")
+                if os.path.exists(wav):
+                    winsound.PlaySound(wav, winsound.SND_FILENAME | winsound.SND_ASYNC)
         except Exception:
             pass
 
     def _tap(self, btn, handler):
-        """给 Container 风格按钮加点击缩放反馈（0.94→1.0）+ 音效。"""
+        """Android 14 风格按钮点击：按下立即缩小，松开弹性回弹（EASE_OUT_BACK）+ 音效。"""
         def _wrap(e):
             self._btn_sound()
             try:
-                btn.scale = 0.94
+                btn.animate_scale = None
+                btn.scale = ft.Scale(scale=0.96)
                 self.page.update()
                 import asyncio
                 async def _rebound():
-                    await asyncio.sleep(0.09)
-                    btn.scale = 1.0
+                    await asyncio.sleep(0.08)
+                    btn.animate_scale = ft.Animation(220, ft.AnimationCurve.EASE_OUT_BACK)
+                    btn.scale = ft.Scale(scale=1.0)
                     self.page.update()
                 self._ui(_rebound())
             except Exception:
@@ -443,7 +496,9 @@ class MobileChatApp:
             return
         audio_controls = []
         for attr in ("_audio_click", "_audio_notify", "_audio_dial",
-                     "_audio_ring", "_audio_hangup"):
+                     "_audio_ring", "_audio_hangup",
+                     "_audio_voice_unlock", "_audio_voice_lock",
+                     "_audio_send"):
             val = getattr(self, attr, None)
             if isinstance(val, (list, tuple)):
                 audio_controls.extend([a for a in val if a is not None])
@@ -538,9 +593,11 @@ class MobileChatApp:
             try:
                 # 每套音效创建两个候选文件名（短名 + 桌面WAV风格名），播放时逐个尝试，
                 # 兼容 assets 目录中实际使用的任意一套命名。
-                self._audio_click = [_make_audio("/click.mp3", volume=0.4),
+                self._audio_click = [_make_audio("/Pixel7-Effect-Tick.mp3", volume=0.4),
+                                      _make_audio("/click.mp3", volume=0.4),
                                       _make_audio("/Windows Navigation Start.mp3", volume=0.4)]
-                self._audio_notify = [_make_audio("/notify.mp3", volume=0.6),
+                self._audio_notify = [_make_audio("/Pixel-ChargingStarted.mp3", volume=0.6),
+                                       _make_audio("/notify.mp3", volume=0.6),
                                        _make_audio("/notify.mp3", volume=0.6)]
                 self._audio_dial = [_make_audio("/dial.mp3", volume=0.6),
                                      _make_audio("/Alarm08.mp3", volume=0.6)]
@@ -548,10 +605,18 @@ class MobileChatApp:
                                      _make_audio("/Alarm03.mp3", volume=0.6, loop=True)]
                 self._audio_hangup = [_make_audio("/hangup.mp3", volume=0.6),
                                        _make_audio("/Speech Misrecognition.mp3", volume=0.6)]
+                self._audio_voice_unlock = [_make_audio("/Pixel-Unlock.mp3", volume=0.5),
+                                            _make_audio("/unlock.mp3", volume=0.5)]
+                self._audio_voice_lock = [_make_audio("/Pixel-Lock.mp3", volume=0.5),
+                                          _make_audio("/lock.mp3", volume=0.5)]
+                self._audio_send = [_make_audio("/Pixel-send.mp3", volume=0.4),
+                                    _make_audio("/send.mp3", volume=0.4)]
                 # 展平列表后全部挂载到 page.services
                 all_audios = []
                 for _alist in [self._audio_click, self._audio_notify, self._audio_dial,
-                                self._audio_ring, self._audio_hangup]:
+                                self._audio_ring, self._audio_hangup,
+                                self._audio_voice_unlock, self._audio_voice_lock,
+                                self._audio_send]:
                     all_audios.extend([a for a in _alist if a is not None])
                 for _a in all_audios:
                     _mount_service(page, _a)
@@ -604,7 +669,7 @@ class MobileChatApp:
                 label, expand=True, height=44,
                 bgcolor=ft.Colors.GREEN_600 if is_active else None,
                 color=ft.Colors.WHITE if is_active else None,
-                on_click=lambda e, m=mode: self._on_ip_mode_change(m),
+                on_click=lambda e, m=mode: (self._btn_sound(), self._on_ip_mode_change(m)),
             )
             btn.data = f"ip_mode_{mode}"
             self._ip_mode_buttons.append(btn)
@@ -690,7 +755,7 @@ class MobileChatApp:
 
         # 先渲染再淡入
         self.page.controls.clear()
-        self.page.controls.append(splash_content)
+        self.page.controls.append(self._wrap_wallpaper(splash_content))
         self.page.update()
         await asyncio.sleep(0.05)
         splash_content.opacity = 1
@@ -839,6 +904,7 @@ class MobileChatApp:
         # 按钮点击缩放动画
         def _btn_tap(btn, handler):
             def _wrap(e):
+                self._btn_sound()
                 btn.scale = 0.94
                 self.page.update()
                 import asyncio
@@ -884,19 +950,21 @@ class MobileChatApp:
         )
 
         root = ft.Container(
-            content=ft.Column(controls=[
-                ft.Row(controls=[ft.Container(expand=True), offline_gear]),
-                ft.Container(height=8),
-                ft.Icon(ft.icons.CHAT_BUBBLE, size=56, color="#34C759"),
-                ft.Text("LanTalk", size=30, weight=ft.FontWeight.BOLD, color=ft.Colors.BLACK87),
-                ft.Text(t("移动端 {VERSION}").format(VERSION=VERSION), size=13,
-                        color=ft.Colors.GREY_500),
-                ft.Container(height=16),
-                glass_card,
-                ft.Container(height=20),
-            ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=4,
-               alignment=ft.MainAxisAlignment.START, scroll=ft.ScrollMode.AUTO),
-            padding=ft.padding.only(top=10, bottom=10), expand=True, bgcolor=ft.Colors.WHITE,
+            content=self._safe_top(
+                ft.Column(controls=[
+                    ft.Row(controls=[ft.Container(expand=True), offline_gear]),
+                    ft.Container(height=8),
+                    ft.Icon(ft.icons.CHAT_BUBBLE, size=56, color="#34C759"),
+                    ft.Text("LanTalk", size=30, weight=ft.FontWeight.BOLD, color=ft.Colors.BLACK87),
+                    ft.Text(t("移动端 {VERSION}").format(VERSION=VERSION), size=13,
+                            color=ft.Colors.GREY_500),
+                    ft.Container(height=16),
+                    glass_card,
+                    ft.Container(height=20),
+                ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=4,
+                   alignment=ft.MainAxisAlignment.START, scroll=ft.ScrollMode.AUTO, expand=True),
+            ),
+            padding=ft.padding.only(bottom=10), expand=True, bgcolor=ft.Colors.WHITE,
         )
         await self._mount_with_fade(root, direction=direction)
 
@@ -984,12 +1052,14 @@ class MobileChatApp:
             ft.Container(expand=True),
         ])
         root = ft.Container(
-            content=ft.Column(controls=[back_row,
-                ft.Text(t("注册账号"), size=18, weight=ft.FontWeight.W_600, color=ft.Colors.BLACK87),
-                ft.Container(height=12), card, ft.Container(height=16),
-                ft.Row(controls=[reg_btn], alignment=ft.MainAxisAlignment.CENTER),
-            ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=4, expand=True),
-            padding=ft.padding.only(top=10, bottom=10), bgcolor=ft.Colors.WHITE, expand=True)
+            content=self._safe_top(
+                ft.Column(controls=[back_row,
+                    ft.Text(t("注册账号"), size=18, weight=ft.FontWeight.W_600, color=ft.Colors.BLACK87),
+                    ft.Container(height=12), card, ft.Container(height=16),
+                    ft.Row(controls=[reg_btn], alignment=ft.MainAxisAlignment.CENTER),
+                ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=4, expand=True),
+            ),
+            padding=ft.padding.only(bottom=10), bgcolor=ft.Colors.WHITE, expand=True)
         await self._mount_with_fade(root, direction=direction)
 
     async def show_offline_server_menu(self, direction="right"):
@@ -1015,20 +1085,21 @@ class MobileChatApp:
             bgcolor=ft.Colors.WHITE, border_radius=14,
             margin=ft.margin.symmetric(horizontal=16))
 
-        root = ft.Container(
-            content=ft.Column(controls=[
-                ft.Text(t("修改服务器地址/重新连接服务器"), size=18, weight=ft.FontWeight.W_600,
-                         color=ft.Colors.BLACK87),
-                ft.Container(height=12), card,
-            ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=4, expand=True),
-            padding=ft.padding.only(top=16, bottom=10), bgcolor=ft.Colors.WHITE, expand=True)
+        _col = ft.Column(controls=[
+                    ft.Text(t("修改服务器地址/重新连接服务器"), size=18, weight=ft.FontWeight.W_600,
+                             color=ft.Colors.BLACK87),
+                    ft.Container(height=12), card,
+                ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=4, expand=True)
         # 顶部返回按钮
         back_row = ft.Row(controls=[
             ft.TextButton(content=ft.Text(t("返回"), color="#34C759", size=16),
                           on_click=lambda e: self._ui(self.show_settings(direction="left"))),
             ft.Container(expand=True),
         ])
-        root.content.controls.insert(0, back_row)
+        _col.controls.insert(0, back_row)
+        root = ft.Container(
+            content=self._safe_top(_col),
+            padding=ft.padding.only(bottom=10), bgcolor=ft.Colors.WHITE, expand=True)
         await self._mount_with_fade(root, direction=direction)
 
     async def _show_offline_reconnect_fail(self, msg):
@@ -1041,7 +1112,7 @@ class MobileChatApp:
                               on_click=lambda e: (self.page.pop_dialog(), self._refresh_net_status_to_offline()))
             ],
         )
-        self.page.show_dialog(dlg)
+        self._show_animated_dialog(dlg)
 
     def _refresh_net_status_to_offline(self):
         """弹窗关闭后把网络状态文字刷成离线模式。"""
@@ -1117,12 +1188,14 @@ class MobileChatApp:
             ft.Container(expand=True),
         ])
         root = ft.Container(
-            content=ft.Column(controls=[back_row,
-                ft.Text(t("修改服务器地址/端口"), size=18, weight=ft.FontWeight.W_600, color=ft.Colors.BLACK87),
-                ft.Container(height=12), card, ft.Container(height=16),
-                ft.Row(controls=[save_btn], alignment=ft.MainAxisAlignment.CENTER),
-            ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=4, expand=True),
-            padding=ft.padding.only(top=10, bottom=10), bgcolor=ft.Colors.WHITE, expand=True)
+            content=self._safe_top(
+                ft.Column(controls=[back_row,
+                    ft.Text(t("修改服务器地址/端口"), size=18, weight=ft.FontWeight.W_600, color=ft.Colors.BLACK87),
+                    ft.Container(height=12), card, ft.Container(height=16),
+                    ft.Row(controls=[save_btn], alignment=ft.MainAxisAlignment.CENTER),
+                ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=4, expand=True),
+            ),
+            padding=ft.padding.only(bottom=10), bgcolor=ft.Colors.WHITE, expand=True)
         await self._mount_with_fade(root, direction=direction)
 
     async def show_edit_account(self, direction="right"):
@@ -1181,12 +1254,14 @@ class MobileChatApp:
             ft.Container(expand=True),
         ])
         root = ft.Container(
-            content=ft.Column(controls=[back_row,
-                ft.Text(t("修改用户名/密码"), size=18, weight=ft.FontWeight.W_600, color=ft.Colors.BLACK87),
-                ft.Container(height=12), card, ft.Container(height=16),
-                ft.Row(controls=[save_btn], alignment=ft.MainAxisAlignment.CENTER),
-            ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=4, expand=True),
-            padding=ft.padding.only(top=10, bottom=10), bgcolor=ft.Colors.WHITE, expand=True)
+            content=self._safe_top(
+                ft.Column(controls=[back_row,
+                    ft.Text(t("修改用户名/密码"), size=18, weight=ft.FontWeight.W_600, color=ft.Colors.BLACK87),
+                    ft.Container(height=12), card, ft.Container(height=16),
+                    ft.Row(controls=[save_btn], alignment=ft.MainAxisAlignment.CENTER),
+                ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=4, expand=True),
+            ),
+            padding=ft.padding.only(bottom=10), bgcolor=ft.Colors.WHITE, expand=True)
         await self._mount_with_fade(root, direction=direction)
 
     async def show_offline_panel(self, direction="right"):
@@ -1245,12 +1320,14 @@ class MobileChatApp:
             margin=ft.margin.symmetric(horizontal=16))
 
         root = ft.Container(
-            content=ft.Column(controls=[
-                ft.Container(height=20),
-                ft.Text(t("离线 / 服务器设置"), size=20, weight=ft.FontWeight.W_600, color=ft.Colors.BLACK87),
-                ft.Container(height=12), card,
-            ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=4),
-            padding=ft.padding.only(top=10, bottom=10), expand=True, bgcolor=ft.Colors.WHITE)
+            content=self._safe_top(
+                ft.Column(controls=[
+                    ft.Container(height=20),
+                    ft.Text(t("离线 / 服务器设置"), size=20, weight=ft.FontWeight.W_600, color=ft.Colors.BLACK87),
+                    ft.Container(height=12), card,
+                ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=4, expand=True),
+            ),
+            padding=ft.padding.only(bottom=10), expand=True, bgcolor=ft.Colors.WHITE)
         await self._mount_with_fade(root, direction=direction)
 
     def do_login(self, username, password, host, port):
@@ -1354,12 +1431,14 @@ class MobileChatApp:
         def _tap_scale(btn, handler):
             def _wrap(e):
                 self._btn_sound()
-                btn.scale = 0.88
+                btn.animate_scale = None
+                btn.scale = ft.Scale(scale=0.92)
                 self.page.update()
                 import asyncio
                 async def _rebound():
-                    await asyncio.sleep(0.1)
-                    btn.scale = 1.0
+                    await asyncio.sleep(0.09)
+                    btn.animate_scale = ft.Animation(240, ft.AnimationCurve.EASE_OUT_BACK)
+                    btn.scale = ft.Scale(scale=1.0)
                     self.page.update()
                     handler(e)
                 self._ui(_rebound())
@@ -1415,10 +1494,11 @@ class MobileChatApp:
                 ft.Container(content=self._device_row, padding=ft.padding.symmetric(horizontal=10)),
                 ft.Container(height=16),
             ], spacing=0, scroll=ft.ScrollMode.AUTO),
-            width=280, bgcolor=ft.Colors.WHITE, visible=False,
+            width=280, bgcolor=ft.Colors.with_opacity(0.8, ft.Colors.WHITE), visible=False,
             offset=ft.transform.Offset(-1.05, 0),
             animate_offset=ft.Animation(300, ft.AnimationCurve.EASE_OUT_CUBIC),
         )
+        drawer_content._skip_wallpaper = True
         self._drawer_content = drawer_content
 
         # 抽屉遮罩
@@ -1426,7 +1506,7 @@ class MobileChatApp:
             bgcolor=ft.Colors.with_opacity(0.4, ft.Colors.BLACK),
             opacity=0, visible=False,
             animate_opacity=ft.Animation(250, ft.AnimationCurve.EASE_OUT),
-            on_click=lambda e: self._close_drawer(),
+            on_click=lambda e: (self._btn_sound(), self._close_drawer()),
         )
 
         # 抽屉把手（左侧露出的小箭头；非定位控件，由 Stack.alignment 钉在
@@ -1439,7 +1519,7 @@ class MobileChatApp:
             alignment=ft.alignment.center,
             offset=ft.transform.Offset(0, 0),
             animate_offset=ft.Animation(300, ft.AnimationCurve.EASE_OUT_CUBIC),
-            on_click=lambda e: self._toggle_drawer(),
+            on_click=lambda e: (self._btn_sound(), self._toggle_drawer()),
             animate_opacity=ft.Animation(200, ft.AnimationCurve.EASE_OUT),
         )
 
@@ -1490,8 +1570,10 @@ class MobileChatApp:
 
         # 聊天主体（不含好友列表，好友列表在抽屉里）
         chat_body = ft.Container(
-            content=ft.Column(controls=[top_card, message_area, input_card], spacing=0, expand=True),
-            bgcolor=_ios_bg, expand=True, padding=ft.padding.only(top=4, bottom=4),
+            content=self._safe_top(
+                ft.Column(controls=[top_card, message_area, input_card], spacing=0, expand=True),
+            ),
+            bgcolor=_ios_bg, expand=True, padding=ft.padding.only(top=0, bottom=4),
         )
 
         # Stack：聊天页面 + 遮罩 + 抽屉 + 把手
@@ -1514,8 +1596,15 @@ class MobileChatApp:
             expand=True)
         await self._mount_with_fade(self._chat_root, direction=direction)
 
-        # 初始化
-        self.file_transfer = FileTransferClient(self.client)
+        # 初始化（加密文件传输：有密钥则AES-GCM加密，无密钥自动降级明文）
+        self.file_transfer = EncryptedFileTransferClient(self.client)
+        try:
+            self.file_transfer.set_key_provider(
+                lambda peer: getattr(self, "_crypto_mgr", None).get_file_crypto(peer)
+                if getattr(self, "_crypto_mgr", None) else None
+            )
+        except Exception as _kpe:
+            print(f"[Mobile] file crypto provider failed: {_kpe}")
         # 注意：不要清空 conversations，重连后需要保留历史聊天记录
         if getattr(self, "_offline_mode", False):
             # 离线模式：不连服务器，跳过心跳/网络刷新/好友刷新
@@ -1558,6 +1647,30 @@ class MobileChatApp:
             self._drawer_handle.offset = ft.transform.Offset(11.73, 0)
             self._drawer_handle.content = ft.Icon(ft.icons.CHEVRON_LEFT, size=18, color="#34C759")
             self.page.update()
+            # 第三步：好友列表项交错淡入（Android 14 风格）
+            await asyncio.sleep(0.15)
+            try:
+                chips = self._device_row.controls if self._device_row else []
+                for i, chip in enumerate(chips):
+                    chip.animate_opacity = None
+                    chip.animate_offset = None
+                    chip.opacity = 0
+                    chip.offset = ft.transform.Offset(0, 0.12)
+                self.page.update()
+                async def _stagger_in():
+                    for i, chip in enumerate(chips):
+                        await asyncio.sleep(0.045)
+                        chip.animate_opacity = ft.Animation(220, ft.AnimationCurve.EASE_OUT)
+                        chip.animate_offset = ft.Animation(240, ft.AnimationCurve.EASE_OUT_CUBIC)
+                        chip.opacity = 1
+                        chip.offset = ft.transform.Offset(0, 0)
+                        try:
+                            self.page.update()
+                        except Exception:
+                            pass
+                self._ui(_stagger_in())
+            except Exception:
+                pass
         except Exception as e:
             self._log(f"open drawer error: {e}")
 
@@ -1593,10 +1706,9 @@ class MobileChatApp:
             return
         msgs = self.conversations.get(conv_id, [])
         controls = []
-        last_incoming_wrap = None
-        last_incoming_text = None
+        _total = len(msgs)
         for i, m in enumerate(msgs):
-            is_last = (i == len(msgs) - 1)
+            is_last = (i == _total - 1)
             if isinstance(m, FileMessage):
                 if getattr(m, "is_voice", False):
                     controls.append(self._build_voice_bubble(m))
@@ -1608,64 +1720,19 @@ class MobileChatApp:
                 controls.append(ft.Container(content=ft.Text(m.text, size=14, opacity=0.5),
                                              alignment=ft.alignment.center, padding=ft.padding.symmetric(vertical=2)))
             else:
-                need_animate = (is_last and not m.is_self and m.text)
-                if need_animate:
-                    wrap = self._build_msg_bubble(m, animate_in=True)
-                    last_incoming_wrap = wrap
-                    last_incoming_text = m.text
-                else:
-                    wrap = self._build_msg_bubble(m, fade_in=(is_last and m.is_self))
+                # 最后一条消息加入场动画（自己发的从底部，别人发的从左侧），无打字机
+                wrap = self._build_msg_bubble(m, fade_in=is_last)
                 controls.append(wrap)
         self._message_list.controls = controls
         self._ui(self.page.update)
-        # 启动最后一条别人消息的入场动画（展开+打字机）
-        if last_incoming_wrap is not None and last_incoming_text:
-            try:
-                asyncio.run_coroutine_threadsafe(
-                    self._animate_incoming_message(last_incoming_wrap, last_incoming_text), self._loop)
-            except Exception as ex:
-                self._log(f"start animate incoming failed: {ex}, fallback to immediate display")
-                # fallback：动画启动失败时立即显示完整消息
-                try:
-                    tc = getattr(last_incoming_wrap, "_msg_text_ctrl", None)
-                    cc = getattr(last_incoming_wrap, "_msg_card", None)
-                    if tc: tc.value = last_incoming_text
-                    if cc: cc.scale = ft.Scale(scale_x=1.0, scale_y=1.0)
-                    last_incoming_wrap.opacity = 1.0
-                    self.page.update()
-                except Exception:
-                    pass
-
-    async def _animate_incoming_message(self, wrap_ctrl, full_text):
-        """收到别人消息的入场动画：展开(220ms) → 打字机(0.05s/字)。"""
-        try:
-            text_ctrl = getattr(wrap_ctrl, "_msg_text_ctrl", None)
-            card_ctrl = getattr(wrap_ctrl, "_msg_card", None)
-            if text_ctrl is None or card_ctrl is None:
-                return
-            if self._message_list is None or wrap_ctrl not in self._message_list.controls:
-                return
-            card_ctrl.scale = ft.Scale(scale_x=1.0, scale_y=1.0)
-            wrap_ctrl.opacity = 1.0
-            self.page.update()
-            await asyncio.sleep(0.22)
-            if self._message_list is None or wrap_ctrl not in self._message_list.controls:
-                return
-            for i in range(1, len(full_text) + 1):
-                if self._message_list is None or wrap_ctrl not in self._message_list.controls:
-                    return
-                text_ctrl.value = full_text[:i]
-                self.page.update()
-                await asyncio.sleep(0.01)
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            self._log(f"animate_incoming_message error: {e}")
 
     def _build_msg_bubble(self, m, fade_in=False, animate_in=False):
-        """消息气泡：[时间|用户名]行 + 气泡Card。animate_in:别人消息入场动画。"""
+        """消息气泡：[时间|用户名]行 + 气泡Card。
+        Pixel Android 14 风格入场动画：
+        - 自己发的：从底部向上滑入 + 缩放(0.85→1.0) + 淡入
+        - 别人发的：从左侧滑入 + 缩放(0.9→1.0) + 淡入"""
         # iOS 风格消息气泡
-        msg_text = MessageContent("" if animate_in else m.text,
+        msg_text = MessageContent(m.text,
                                    color=ft.Colors.WHITE if m.is_self else ft.Colors.GREY_900,
                                    width=260, selectable=True,
                                    emoji_family=self.EMOJI_FONT_FAMILY)
@@ -1691,24 +1758,43 @@ class MobileChatApp:
         meta_row = ft.Row(controls=[time_text, sender_text], spacing=4,
                           alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                           vertical_alignment=ft.CrossAxisAlignment.CENTER)
-        if animate_in:
-            bubble_card.scale = ft.Scale(scale_x=1.0, scale_y=0.0)
-            bubble_card.animate_scale = ft.Animation(220, ft.AnimationCurve.EASE_OUT)
         row = ft.Row(controls=[ft.Container(expand=True), bubble_card] if m.is_self else [bubble_card, ft.Container(expand=True)],
                       alignment=ft.MainAxisAlignment.END if m.is_self else ft.MainAxisAlignment.START)
         inner_col = ft.Column(controls=[meta_row, row], spacing=1,
                               horizontal_alignment=ft.CrossAxisAlignment.END if m.is_self else ft.CrossAxisAlignment.START)
-        animated_wrap = ft.Container(content=inner_col, opacity=0 if (fade_in or animate_in) else 1,
-                                      animate_opacity=ft.Animation(220 if animate_in else 250, ft.AnimationCurve.EASE_OUT),
-                                      margin=ft.margin.symmetric(vertical=1))
-        if fade_in and not animate_in:
-            def _do_fade():
+
+        # Pixel 风格入场动画初始状态
+        _animating = fade_in or animate_in
+        if m.is_self:
+            # 自己发的：从底部向上滑入 + 缩小
+            _init_offset = ft.transform.Offset(0, 0.25)
+            _init_scale = 0.85
+        else:
+            # 别人发的：从左侧滑入 + 轻微缩小
+            _init_offset = ft.transform.Offset(-0.15, 0)
+            _init_scale = 0.92
+
+        animated_wrap = ft.Container(
+            content=inner_col,
+            opacity=0 if _animating else 1,
+            animate_opacity=ft.Animation(260, ft.AnimationCurve.EASE_OUT_CUBIC),
+            offset=_init_offset if _animating else None,
+            animate_offset=ft.Animation(280, ft.AnimationCurve.EASE_OUT_CUBIC) if _animating else None,
+            scale=ft.Scale(scale=_init_scale) if _animating else None,
+            animate_scale=ft.Animation(280, ft.AnimationCurve.EASE_OUT_CUBIC) if _animating else None,
+            margin=ft.margin.symmetric(vertical=1))
+
+        if _animating:
+            def _do_animate():
                 try:
                     animated_wrap.opacity = 1
+                    animated_wrap.offset = ft.transform.Offset(0, 0)
+                    animated_wrap.scale = ft.Scale(scale=1.0)
                     self.page.update()
                 except Exception:
                     pass
-            threading.Timer(0.08, _do_fade).start()
+            threading.Timer(0.05, _do_animate).start()
+
         animated_wrap._msg_text_ctrl = msg_text
         animated_wrap._msg_card = bubble_card
         return animated_wrap
@@ -2010,6 +2096,8 @@ class MobileChatApp:
             self.conversations[self.current_conv].append(
                 ChatMessage(text=text, is_self=True, sender=self.client.username or ""))
             self._refresh_messages(self.current_conv)
+            # 等气泡动画渲染完成（280ms）后播放发送音效
+            threading.Timer(0.32, self._send_sound).start()
         except Exception as e:
             self._append_system(t("发送失败：{e}").format(e=e))
         self._ui(self.page.update)
@@ -2092,7 +2180,7 @@ class MobileChatApp:
             content=ft.Column(controls=[field, msg], width=280, tight=True, spacing=8),
             actions=[ft.TextButton(t("取消"), on_click=lambda x: self.page.pop_dialog()),
                      ft.ElevatedButton(t("发送"), on_click=_submit)])
-        self.page.show_dialog(dlg)
+        self._show_animated_dialog(dlg)
 
     def _do_add_friend(self, username):
         def worker():
@@ -2302,7 +2390,7 @@ class MobileChatApp:
                                   animate_opacity=ft.Animation(250, ft.AnimationCurve.EASE_OUT)),
             actions=[ft.TextButton(t("取消"), on_click=lambda x: self._close_dialog_with_fade(dlg))])
         self._active_dialog = dlg
-        self.page.show_dialog(dlg)
+        self._show_animated_dialog(dlg)
         def _fade_in():
             try:
                 dlg.content.opacity = 1
@@ -2355,6 +2443,8 @@ class MobileChatApp:
                         self.client.send_text(notify_msg)
                 except Exception as ex:
                     self._log(f"notify failed: {ex}")
+                # 文件/语音发送完成，等气泡刷新后播放发送音效
+                threading.Timer(0.32, self._send_sound).start()
             else:
                 fm.status = "failed"
                 self._append_system(t("文件发送失败: {err}").format(err=err))
@@ -2381,6 +2471,10 @@ class MobileChatApp:
             self._refresh_messages(conv_id)
 
         def worker():
+            try:
+                self.file_transfer.set_download_peer(sender)
+            except Exception:
+                pass
             ok, filepath, err = self.file_transfer.download_file(file_id, save_dir, on_progress=on_progress)
             if ok:
                 fm.status = "completed"
@@ -2441,7 +2535,8 @@ class MobileChatApp:
             content=ft.Icon(ft.icons.MIC, size=40, color=ft.Colors.WHITE),
             width=84, height=84, border_radius=42, alignment=ft.alignment.center,
             gradient=green_grad,
-            animate_scale=ft.Animation(150, ft.AnimationCurve.EASE_OUT))
+            animate_scale=ft.Animation(220, ft.AnimationCurve.EASE_OUT_BACK))
+        self._rec_big_mic_btn = big_mic
         self._rec_big_mic = ft.GestureDetector(
             content=big_mic,
             on_pan_start=lambda e: self._rec_big_press(e),
@@ -2546,7 +2641,7 @@ class MobileChatApp:
             content=album_inner, height=64, border_radius=14, alignment=ft.alignment.center,
             bgcolor=ft.Colors.with_opacity(0.08, ft.Colors.GREY_500),
             animate_scale=ft.Animation(150, ft.AnimationCurve.EASE_OUT))
-        album_btn.on_click = self._file_drawer_album
+        album_btn.on_click = lambda e: (self._btn_sound(), self._file_drawer_album(e))
 
         file_inner = ft.Column(controls=[
             ft.Icon(ft.icons.FOLDER_OUTLINED, size=26, color="#34C759"),
@@ -2557,7 +2652,7 @@ class MobileChatApp:
             content=file_inner, height=64, border_radius=14, alignment=ft.alignment.center,
             bgcolor=ft.Colors.with_opacity(0.08, ft.Colors.GREY_500),
             animate_scale=ft.Animation(150, ft.AnimationCurve.EASE_OUT))
-        file_entry_btn.on_click = self._file_drawer_any
+        file_entry_btn.on_click = lambda e: (self._btn_sound(), self._file_drawer_any(e))
         entry_row = ft.Row(controls=[
             ft.Container(expand=True, content=album_btn),
             ft.Container(expand=True, content=file_entry_btn),
@@ -2567,7 +2662,7 @@ class MobileChatApp:
         self._file_drawer_back = ft.Text(t("返回"), size=16, color="#34C759")
         back_box = ft.Container(content=self._file_drawer_back,
                                 padding=ft.padding.symmetric(horizontal=10, vertical=8),
-                                on_click=lambda e: self._file_drawer_go_up())
+                                on_click=lambda e: (self._btn_sound(), self._file_drawer_go_up()))
         self._file_drawer_path = ft.Text("", size=13, color=ft.Colors.GREY_600,
                                          expand=True, overflow=ft.TextOverflow.ELLIPSIS)
         path_bar = ft.Container(
@@ -2608,6 +2703,7 @@ class MobileChatApp:
     # ---- 抓手下拉关闭（跟手）----
     def _file_grab_start(self, e=None):
         self._file_drag_dy = 0.0
+        self._file_drag_last_update = 0.0
 
     def _file_grab_update(self, e=None):
         # Flet 0.86 DragUpdateEvent 没有 delta_y：垂直增量取 local_delta.y，
@@ -2621,6 +2717,11 @@ class MobileChatApp:
         self._file_drag_dy = max(0.0, self._file_drag_dy + float(dy))
         self._file_drawer_sheet.offset = ft.transform.Offset(
             0, self._file_drag_dy / self._FILE_DRAWER_H)
+        # 节流：约 60fps（16ms），避免频繁全量刷新导致卡顿
+        _now = time.time()
+        if _now - getattr(self, "_file_drag_last_update", 0) < 0.016:
+            return
+        self._file_drag_last_update = _now
         try:
             self._file_drawer_sheet.update()
         except Exception:
@@ -2640,8 +2741,6 @@ class MobileChatApp:
     # ---- 打开 / 关闭 ----
     async def _open_file_drawer(self):
         self._file_drag_dy = 0.0
-        self._file_drawer_cur = self._file_browser_start_dir()
-        self._refresh_file_drawer_dir(self._file_drawer_cur)
         sheet = self._file_drawer_sheet
         sheet.visible = True
         self._file_drawer.visible = True
@@ -2656,6 +2755,9 @@ class MobileChatApp:
             sheet.update()
         except Exception:
             pass
+        # 动画开始后再扫描文件（280ms 动画内完成，不阻塞启动）
+        self._file_drawer_cur = self._file_browser_start_dir()
+        self._refresh_file_drawer_dir(self._file_drawer_cur)
 
     async def _close_file_drawer_anim(self):
         sheet = self._file_drawer_sheet
@@ -2686,66 +2788,107 @@ class MobileChatApp:
 
     # ---- 目录浏览 ----
     def _refresh_file_drawer_dir(self, cur):
+        """异步扫描目录，避免文件多时阻塞 UI 线程。"""
+        import threading
         self._file_drawer_cur = cur
         self._file_drawer_path.value = cur
-        rows = []
-        try:
-            entries = sorted(os.listdir(cur), key=lambda s: s.lower())
-            err = None
-        except PermissionError:
-            entries = None
-            err = t("没有访问权限，请在系统设置中允许所有文件访问")
-        except Exception as e:
-            entries = None
-            err = f"{t('无法读取目录')}: {e}"
-
-        if entries is None:
-            rows.append(ft.Container(
-                content=ft.Text(err, size=14, color=ft.Colors.RED_400,
-                                text_align=ft.TextAlign.CENTER),
-                padding=ft.padding.all(20)))
-        else:
-            parent = os.path.dirname(cur.rstrip("/"))
-            if parent and parent != cur and cur != "/":
-                rows.append(self._file_drawer_row(
-                    ft.icons.ARROW_UPWARD, ft.Colors.GREY_600, "..", "",
-                    lambda e: self._refresh_file_drawer_dir(parent)))
-            folders, files = [], []
-            for name in entries:
-                full = os.path.join(cur, name)
-                try:
-                    if os.path.isdir(full):
-                        folders.append((name, full))
-                    else:
-                        files.append((name, full))
-                except Exception:
-                    continue
-            for name, full in folders:
-                rows.append(self._file_drawer_row(
-                    ft.icons.FOLDER_OUTLINED, "#34C759", name, "",
-                    lambda e, p=full: self._refresh_file_drawer_dir(p),
-                    chevron=True))
-            if getattr(self, "_file_drawer_image_mode", False):
-                _IMG_EXT = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp")
-                files = [(n, p) for (n, p) in files
-                         if n.lower().endswith(_IMG_EXT)]
-            for name, full in files:
-                try:
-                    sz = self._fmt_size(os.path.getsize(full))
-                except Exception:
-                    sz = ""
-                _is_img = name.lower().endswith(
-                    (".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"))
-                _ic = (ft.icons.IMAGE_OUTLINED if _is_img
-                       else ft.icons.INSERT_DRIVE_FILE_OUTLINED)
-                rows.append(self._file_drawer_row(
-                    _ic, ft.Colors.GREY_500,
-                    name, sz, lambda e, p=full: self._file_drawer_send(p)))
-        self._file_drawer_list.controls = rows
+        # 先清空，显示加载中
+        self._file_drawer_list.controls = [ft.Container(
+            content=ft.Text(t("加载中..."), size=14, color=ft.Colors.GREY_500,
+                            text_align=ft.TextAlign.CENTER),
+            padding=ft.padding.all(20))]
         try:
             self._file_drawer_sheet.update()
         except Exception:
             pass
+
+        def _scan():
+            rows = []
+            try:
+                entries = sorted(os.listdir(cur), key=lambda s: s.lower())
+                err = None
+            except PermissionError:
+                entries = None
+                err = t("没有访问权限，请在系统设置中允许所有文件访问")
+            except Exception as e:
+                entries = None
+                err = f"{t('无法读取目录')}: {e}"
+
+            if entries is None:
+                rows.append(ft.Container(
+                    content=ft.Text(err, size=14, color=ft.Colors.RED_400,
+                                    text_align=ft.TextAlign.CENTER),
+                    padding=ft.padding.all(20)))
+            else:
+                parent = os.path.dirname(cur.rstrip("/"))
+                if parent and parent != cur and cur != "/":
+                    rows.append(self._file_drawer_row(
+                        ft.icons.ARROW_UPWARD, ft.Colors.GREY_600, "..", "",
+                        lambda e: self._refresh_file_drawer_dir(parent)))
+                folders, files = [], []
+                for name in entries:
+                    full = os.path.join(cur, name)
+                    try:
+                        if os.path.isdir(full):
+                            folders.append((name, full))
+                        else:
+                            files.append((name, full))
+                    except Exception:
+                        continue
+                for name, full in folders:
+                    rows.append(self._file_drawer_row(
+                        ft.icons.FOLDER_OUTLINED, "#34C759", name, "",
+                        lambda e, p=full: self._refresh_file_drawer_dir(p),
+                        chevron=True))
+                if getattr(self, "_file_drawer_image_mode", False):
+                    _IMG_EXT = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp")
+                    files = [(n, p) for (n, p) in files
+                             if n.lower().endswith(_IMG_EXT)]
+                for name, full in files:
+                    try:
+                        sz = self._fmt_size(os.path.getsize(full))
+                    except Exception:
+                        sz = ""
+                    _is_img = name.lower().endswith(
+                        (".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"))
+                    _ic = (ft.icons.IMAGE_OUTLINED if _is_img
+                           else ft.icons.INSERT_DRIVE_FILE_OUTLINED)
+                    rows.append(self._file_drawer_row(
+                        _ic, ft.Colors.GREY_500,
+                        name, sz, lambda e, p=full: self._file_drawer_send(p)))
+
+            # 扫描完成，回到 UI 线程更新
+            async def _apply():
+                self._file_drawer_list.controls = rows
+                # Android 14 风格交错淡入（前12项）
+                try:
+                    show_rows = rows[:12]
+                    for r in show_rows:
+                        r.animate_opacity = None
+                        r.opacity = 0
+                    self._file_drawer_sheet.update()
+                    async def _stagger():
+                        for r in show_rows:
+                            await asyncio.sleep(0.03)
+                            r.animate_opacity = ft.Animation(200, ft.AnimationCurve.EASE_OUT)
+                            r.opacity = 1
+                            try:
+                                self._file_drawer_sheet.update()
+                            except Exception:
+                                pass
+                    self._ui(_stagger())
+                except Exception:
+                    pass
+                try:
+                    self._file_drawer_sheet.update()
+                except Exception:
+                    pass
+            try:
+                asyncio.run_coroutine_threadsafe(_apply(), self._loop)
+            except Exception:
+                pass
+
+        threading.Thread(target=_scan, daemon=True).start()
 
     def _file_drawer_row(self, icon, icon_color, name, sub, handler, chevron=False):
         lead = ft.Icon(icon, size=22, color=icon_color)
@@ -2902,11 +3045,38 @@ class MobileChatApp:
             self._recording_path = path
             self._rec_tick_running = True
             self._cancel_mode = False
+            # 兼容多种坐标获取方式（手机端global_position可能不可用）
+            sx = sy = None
             _gp = getattr(e, "global_position", None)
-            self._press_start_y = getattr(_gp, "y", None)
+            if _gp is not None:
+                sx = getattr(_gp, "x", None)
+                sy = getattr(_gp, "y", None)
+            if sx is None:
+                sx = getattr(e, "global_x", None)
+            if sy is None:
+                sy = getattr(e, "global_y", None)
+            if sx is None:
+                _lp = getattr(e, "local_position", None)
+                if _lp is not None:
+                    sx = getattr(_lp, "x", None)
+                    sy = getattr(_lp, "y", None)
+            if sx is None:
+                sx = getattr(e, "local_x", None)
+            if sy is None:
+                sy = getattr(e, "local_y", None)
+            self._press_start_x = sx
+            self._press_start_y = sy
+            print(f"[Rec] press start=({sx},{sy})")
             self._rec_status.value = t("录制中...")
             self._rec_status.color = ft.Colors.GREY_900
             self._set_cancel_btn(False)
+            self._voice_sound("unlock")  # 开始录音提示音
+            # Android 14 按下缩小
+            try:
+                self._rec_big_mic_btn.scale = ft.Scale(scale=0.92)
+                self._rec_big_mic_btn.update()
+            except Exception:
+                pass
             try:
                 asyncio.run_coroutine_threadsafe(self._rec_tick_loop(), self._loop)
             except Exception:
@@ -2916,35 +3086,80 @@ class MobileChatApp:
             self._append_system(t("录音启动失败: {e}").format(e=ex))
 
     def _set_cancel_btn(self, active):
-        """active=True=上滑到取消区，按钮变红白字；False=恢复灰。"""
-        self._cancel_mode = bool(active)
+        """active=True=上滑到取消区，按钮变红白字；False=恢复灰。带Android 14弹性回弹。"""
+        active = bool(active)
+        # 确保按钮可见（不管状态有没有变化）
+        try:
+            self._rec_cancel_btn.visible = True
+            self._rec_cancel_btn.update()
+        except Exception:
+            pass
+        if active == getattr(self, '_cancel_mode', False):
+            return  # 状态没变，不重复触发颜色/缩放动画
+        self._cancel_mode = active
         try:
             if active:
                 self._rec_cancel_btn.bgcolor = ft.Colors.RED_400
                 self._rec_cancel_icon.color = ft.Colors.WHITE
                 self._rec_cancel_text.value = t("松开取消")
                 self._rec_cancel_text.color = ft.Colors.WHITE
+                # Android 14 弹性放大回弹：先放大到1.2，再弹回1.0
+                self._rec_cancel_btn.scale = ft.Scale(scale=1.2)
             else:
                 self._rec_cancel_btn.bgcolor = ft.Colors.with_opacity(0.12, ft.Colors.GREY_500)
                 self._rec_cancel_icon.color = ft.Colors.GREY_600
                 self._rec_cancel_text.value = t("取消")
                 self._rec_cancel_text.color = ft.Colors.GREY_600
-            self._rec_cancel_btn.visible = True
+                # Android 14 弹性缩小回弹：先缩小到0.9，再弹回1.0
+                self._rec_cancel_btn.scale = ft.Scale(scale=0.9)
             self._rec_cancel_btn.update()
+            def _rebound():
+                try:
+                    self._rec_cancel_btn.scale = ft.Scale(scale=1.0)
+                    self._rec_cancel_btn.update()
+                except Exception:
+                    pass
+            threading.Timer(0.08, _rebound).start()
         except Exception:
             pass
 
     def _rec_big_move(self, e=None):
-        """手指拖动：上滑超过阈值进入取消模式，取消按钮变红。"""
+        """手指拖动：移到右上方删除按钮区域进入取消模式，取消按钮变红。"""
         if not getattr(self, "_recording_path", None):
             return
+        sx = getattr(self, "_press_start_x", None)
         sy = self._press_start_y
+        # 兼容多种坐标获取方式
+        cx = cy = None
         _gp = getattr(e, "global_position", None)
-        cy = getattr(_gp, "y", None)
-        if sy is None or cy is None:
+        if _gp is not None:
+            cx = getattr(_gp, "x", None)
+            cy = getattr(_gp, "y", None)
+        if cx is None:
+            cx = getattr(e, "global_x", None)
+        if cy is None:
+            cy = getattr(e, "global_y", None)
+        if cx is None:
+            _lp = getattr(e, "local_position", None)
+            if _lp is not None:
+                cx = getattr(_lp, "x", None)
+                cy = getattr(_lp, "y", None)
+        if cx is None:
+            cx = getattr(e, "local_x", None)
+        if cy is None:
+            cy = getattr(e, "local_y", None)
+        if sx is None or sy is None or cx is None or cy is None:
+            print(f"[Rec] move coords missing: start=({sx},{sy}) cur=({cx},{cy})")
             return
+        dx = cx - sx  # 右滑为正
         dy = sy - cy  # 上滑为正
-        self._set_cancel_btn(dy > 90)
+        # 删除按钮在右上方：右滑超过50 或 上滑超过70 进入取消模式
+        in_cancel = (dx > 50) or (dy > 70)
+        # 退出取消模式需要回到更近的位置（带迟滞，避免抖动）
+        if in_cancel:
+            self._set_cancel_btn(True)
+        elif dx < 25 and dy < 40:
+            self._set_cancel_btn(False)
 
     def _rec_to_standby(self):
         """发送完/丢弃单条录音后，抽屉保持打开，回到待命态（可继续录下一条）。"""
@@ -2969,7 +3184,15 @@ class MobileChatApp:
         cancel_mode = self._cancel_mode
         self._cancel_mode = False
         self._press_start_y = None
+        self._press_start_x = None
         self._mic_btn_normal()
+        self._voice_sound("lock")  # 结束录音提示音
+        # Android 14 松开弹性回弹
+        try:
+            self._rec_big_mic_btn.scale = ft.Scale(scale=1.0)
+            self._rec_big_mic_btn.update()
+        except Exception:
+            pass
         if not path:
             self._hide_cancel_btn()
             return
@@ -3454,18 +3677,47 @@ class MobileChatApp:
         return overlay
 
     def _animate_btn(self, btn):
-        """按钮点击缩放回弹动画。"""
+        """Android 14 风格按钮点击缩放回弹动画（EASE_OUT_BACK 弹性）。"""
         try:
-            btn.scale = 0.9
+            btn.animate_scale = None
+            btn.scale = ft.Scale(scale=0.92)
             self.page.update()
             import asyncio
             async def _rebound():
-                await asyncio.sleep(0.1)
-                btn.scale = 1.0
+                await asyncio.sleep(0.09)
+                btn.animate_scale = ft.Animation(240, ft.AnimationCurve.EASE_OUT_BACK)
+                btn.scale = ft.Scale(scale=1.0)
                 self.page.update()
             self._ui(_rebound())
         except Exception:
             pass
+
+    def _show_animated_dialog(self, dlg):
+        """Android 14 风格对话框入场：缩放淡入（scale 0.85→1.0 + opacity 0→1，EASE_OUT_BACK 弹性）。"""
+        try:
+            orig_content = dlg.content
+            animated_content = ft.Container(
+                content=orig_content,
+                scale=ft.Scale(scale=0.85),
+                opacity=0,
+                animate_scale=ft.Animation(260, ft.AnimationCurve.EASE_OUT_BACK),
+                animate_opacity=ft.Animation(220, ft.AnimationCurve.EASE_OUT),
+            )
+            dlg.content = animated_content
+            self._show_animated_dialog(dlg)
+            def _animate():
+                try:
+                    animated_content.scale = ft.Scale(scale=1.0)
+                    animated_content.opacity = 1
+                    self.page.update()
+                except Exception:
+                    pass
+            threading.Timer(0.05, _animate).start()
+        except Exception:
+            try:
+                self._show_animated_dialog(dlg)
+            except Exception:
+                pass
 
     def _update_voice_btn(self, btn, icon_name, label_text):
         """更新 iOS 风格语音按钮的图标和文字（Container 结构：content=Column([Icon, Text])）。"""
@@ -3595,7 +3847,7 @@ class MobileChatApp:
                 ft.ElevatedButton(t("拒绝"), bgcolor=ft.Colors.RED_500, color=ft.Colors.WHITE, on_click=_reject),
                 ft.ElevatedButton(t("同意"), bgcolor=ft.Colors.GREEN_600, color=ft.Colors.WHITE, on_click=_accept),
             ])
-        self.page.show_dialog(dlg)
+        self._show_animated_dialog(dlg)
 
     def _hide_incoming_call(self):
         try: self.page.pop_dialog()
@@ -3612,7 +3864,7 @@ class MobileChatApp:
                 ft.Row(controls=[_btn(t("中文"), "zh"), _btn("English", "en")], spacing=6)
             ], width=260, tight=True),
             actions=[ft.TextButton(t("关闭"), on_click=lambda x: self.page.pop_dialog())])
-        self.page.show_dialog(dlg)
+        self._show_animated_dialog(dlg)
 
     def _open_theme_dialog(self, e=None):
         self._btn_sound()
@@ -3631,14 +3883,14 @@ class MobileChatApp:
                 ], spacing=6)
             ], width=280, tight=True),
             actions=[ft.TextButton(t("关闭"), on_click=lambda x: self.page.pop_dialog())])
-        self.page.show_dialog(dlg)
+        self._show_animated_dialog(dlg)
 
     def _open_ip_mode_dialog(self, e=None):
         self._btn_sound()
         dlg = ft.AlertDialog(modal=True, title=ft.Text(t("更改IP模式")),
             content=ft.Column(controls=[self._build_ip_mode_row()], width=280, tight=True),
             actions=[ft.TextButton(t("关闭"), on_click=lambda x: self.page.pop_dialog())])
-        self.page.show_dialog(dlg)
+        self._show_animated_dialog(dlg)
 
     def _export_crash_logs_action(self, e=None):
         self._btn_sound()
@@ -3655,7 +3907,7 @@ class MobileChatApp:
         dlg = ft.AlertDialog(modal=True, title=ft.Text(t("崩溃日志导出")),
             content=ft.Text(msg, selectable=True),
             actions=[ft.TextButton(t("确定"), on_click=lambda x: self.page.pop_dialog())])
-        self.page.show_dialog(dlg)
+        self._show_animated_dialog(dlg)
 
     def _get_crash_log_dir(self):
         return os.path.join(os.path.dirname(os.path.abspath(__file__)), "crash_logs")
@@ -3788,10 +4040,12 @@ class MobileChatApp:
                              bgcolor=ft.Colors.WHITE, border_radius=12,
                              margin=ft.margin.symmetric(horizontal=16, vertical=8))
         root = ft.Container(
-            content=ft.Column(controls=[
-                nav,
-                ft.Container(expand=True, content=ft.Column(controls=[group], scroll=ft.ScrollMode.AUTO)),
-            ], spacing=0, expand=True),
+            content=self._safe_top(
+                ft.Column(controls=[
+                    nav,
+                    ft.Container(expand=True, content=ft.Column(controls=[group], scroll=ft.ScrollMode.AUTO)),
+                ], spacing=0, expand=True),
+            ),
             bgcolor="#F2F2F7", expand=True)
         await self._mount_with_fade(root, direction=direction)
 
@@ -3808,6 +4062,88 @@ class MobileChatApp:
             await self.send_file(path)
             await self.show_chat(direction="left")
         self._ui(_do())
+
+    async def show_wallpaper_picker(self, direction="right"):
+        """壁纸选择独立页面：网格展示所有壁纸，点击选中并保存。"""
+        import os
+        _wp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wallpapers")
+        _current = load_wallpaper_file()
+        _exts = ('.jpg', '.jpeg', '.png', '.webp')
+        try:
+            _files = sorted([f for f in os.listdir(_wp_dir) if f.lower().endswith(_exts)])
+        except Exception:
+            _files = []
+
+        def _on_pick(filename):
+            def _do(e):
+                self._btn_sound()
+                try:
+                    save_wallpaper_file(filename)
+                    # 如果没启用壁纸，自动启用
+                    if not load_wallpaper_enabled():
+                        save_wallpaper_enabled(True)
+                except Exception:
+                    pass
+                self._ui(self.show_settings(direction="left"))
+            return _do
+
+        # 构建网格（2列）
+        grid_controls = []
+        for i in range(0, len(_files), 2):
+            row_controls = []
+            for j in range(2):
+                if i + j < len(_files):
+                    fname = _files[i + j]
+                    fpath = os.path.join(_wp_dir, fname)
+                    is_selected = (fname == _current)
+                    # 缩略图容器
+                    thumb = ft.Container(
+                        content=ft.Stack(controls=[
+                            ft.Image(src=fpath, fit="cover", expand=True),
+                            # 选中标记
+                            ft.Container(
+                                content=ft.Icon(ft.icons.CHECK_CIRCLE, size=28, color="#34C759"),
+                                alignment=ft.alignment.top_right,
+                                padding=ft.padding.all(6),
+                                visible=is_selected,
+                            ),
+                        ]),
+                        width=160, height=280, border_radius=12,
+                        border=ft.Border(
+                            top=ft.BorderSide(3, "#34C759"),
+                            bottom=ft.BorderSide(3, "#34C759"),
+                            left=ft.BorderSide(3, "#34C759"),
+                            right=ft.BorderSide(3, "#34C759"),
+                        ) if is_selected else None,
+                        on_click=_on_pick(fname),
+                        animate_scale=ft.Animation(150, ft.AnimationCurve.EASE_OUT),
+                    )
+                    row_controls.append(thumb)
+                else:
+                    row_controls.append(ft.Container(width=160))
+            grid_controls.append(ft.Row(controls=row_controls,
+                                          alignment=ft.MainAxisAlignment.SPACE_EVENLY,
+                                          spacing=12))
+
+        tip = ft.Text(t("共 {n} 张壁纸，点击选择").format(n=len(_files)),
+                      size=12, color=ft.Colors.GREY_500, text_align=ft.TextAlign.CENTER)
+
+        root = ft.Container(
+            content=self._safe_top(
+                ft.Column(controls=[
+                    self._settings_nav(t("选择壁纸"), self.show_settings),
+                    ft.Container(height=8),
+                    tip,
+                    ft.Container(height=8),
+                    ft.Container(expand=True,
+                                 content=ft.Column(controls=grid_controls,
+                                                   scroll=ft.ScrollMode.AUTO,
+                                                   spacing=12,
+                                                   horizontal_alignment=ft.CrossAxisAlignment.CENTER)),
+                ], spacing=0, expand=True),
+            ),
+            bgcolor="#F2F2F7", expand=True)
+        await self._mount_with_fade(root, direction=direction)
 
     async def show_crash_logs(self, direction="right"):
         """崩溃日志列表页面。"""
@@ -3843,10 +4179,12 @@ class MobileChatApp:
                              bgcolor=ft.Colors.WHITE, border_radius=12,
                              margin=ft.margin.symmetric(horizontal=16, vertical=8))
         root = ft.Container(
-            content=ft.Column(controls=[
-                self._settings_nav(t("崩溃日志"), self.show_settings),
-                ft.Container(expand=True, content=ft.Column(controls=[group], scroll=ft.ScrollMode.AUTO)),
-            ], spacing=0, expand=True),
+            content=self._safe_top(
+                ft.Column(controls=[
+                    self._settings_nav(t("崩溃日志"), self.show_settings),
+                    ft.Container(expand=True, content=ft.Column(controls=[group], scroll=ft.ScrollMode.AUTO)),
+                ], spacing=0, expand=True),
+            ),
             bgcolor="#F2F2F7", expand=True)
         await self._mount_with_fade(root, direction=direction)
 
@@ -3973,12 +4311,14 @@ class MobileChatApp:
             bgcolor=ft.Colors.WHITE, border_radius=12)
 
         root = ft.Container(
-            content=ft.Column(controls=[
-                self._settings_nav(filename, self.show_crash_logs),
-                ft.Container(expand=True, content=ft.Column(controls=[
-                    btn_row, tip_row, content_view, ft.Container(height=16),
-                ], scroll=ft.ScrollMode.AUTO)),
-            ], spacing=0, expand=True),
+            content=self._safe_top(
+                ft.Column(controls=[
+                    self._settings_nav(filename, self.show_crash_logs),
+                    ft.Container(expand=True, content=ft.Column(controls=[
+                        btn_row, tip_row, content_view, ft.Container(height=16),
+                    ], scroll=ft.ScrollMode.AUTO)),
+                ], spacing=0, expand=True),
+            ),
             bgcolor="#F2F2F7", expand=True)
         await self._mount_with_fade(root, direction=direction)
 
@@ -4054,13 +4394,15 @@ class MobileChatApp:
             margin=ft.margin.symmetric(horizontal=16, vertical=6))
 
         root = ft.Container(
-            content=ft.Column(controls=[
-                self._settings_nav(t("修改密码"), self.show_settings),
-                ft.Container(height=4), form,
-                ft.Container(height=8),
-                ft.Container(content=save_btn, margin=ft.margin.symmetric(horizontal=16)),
-                ft.Container(expand=True),
-            ], spacing=0, expand=True, scroll=ft.ScrollMode.AUTO),
+            content=self._safe_top(
+                ft.Column(controls=[
+                    self._settings_nav(t("修改密码"), self.show_settings),
+                    ft.Container(height=4), form,
+                    ft.Container(height=8),
+                    ft.Container(content=save_btn, margin=ft.margin.symmetric(horizontal=16)),
+                    ft.Container(expand=True),
+                ], spacing=0, expand=True, scroll=ft.ScrollMode.AUTO),
+            ),
             bgcolor="#F2F2F7", expand=True)
         await self._mount_with_fade(root)
 
@@ -4101,13 +4443,15 @@ class MobileChatApp:
             margin=ft.margin.symmetric(horizontal=16, vertical=6))
 
         root = ft.Container(
-            content=ft.Column(controls=[
-                self._settings_nav(t("修改用户名"), self.show_settings),
-                ft.Container(height=4), form,
-                ft.Container(height=8),
-                ft.Container(content=save_btn, margin=ft.margin.symmetric(horizontal=16)),
-                ft.Container(expand=True),
-            ], spacing=0, expand=True, scroll=ft.ScrollMode.AUTO),
+            content=self._safe_top(
+                ft.Column(controls=[
+                    self._settings_nav(t("修改用户名"), self.show_settings),
+                    ft.Container(height=4), form,
+                    ft.Container(height=8),
+                    ft.Container(content=save_btn, margin=ft.margin.symmetric(horizontal=16)),
+                    ft.Container(expand=True),
+                ], spacing=0, expand=True, scroll=ft.ScrollMode.AUTO),
+            ),
             bgcolor="#F2F2F7", expand=True)
         await self._mount_with_fade(root)
 
@@ -4122,10 +4466,12 @@ class MobileChatApp:
             self._option_row("English", cur == "en", lambda e: self._switch_lang("en")),
         ])
         root = ft.Container(
-            content=ft.Column(controls=[
-                self._settings_nav(t("修改语言"), self.show_settings),
-                ft.Container(height=4), group, ft.Container(expand=True),
-            ], spacing=0, expand=True, scroll=ft.ScrollMode.AUTO),
+            content=self._safe_top(
+                ft.Column(controls=[
+                    self._settings_nav(t("修改语言"), self.show_settings),
+                    ft.Container(height=4), group, ft.Container(expand=True),
+                ], spacing=0, expand=True, scroll=ft.ScrollMode.AUTO),
+            ),
             bgcolor="#F2F2F7", expand=True)
         await self._mount_with_fade(root)
 
@@ -4140,10 +4486,12 @@ class MobileChatApp:
             self._option_row(t("跟随系统"), cur == "system", lambda e: self._switch_theme("system")),
         ])
         root = ft.Container(
-            content=ft.Column(controls=[
-                self._settings_nav(t("更改主题颜色"), self.show_settings),
-                ft.Container(height=4), group, ft.Container(expand=True),
-            ], spacing=0, expand=True, scroll=ft.ScrollMode.AUTO),
+            content=self._safe_top(
+                ft.Column(controls=[
+                    self._settings_nav(t("更改主题颜色"), self.show_settings),
+                    ft.Container(height=4), group, ft.Container(expand=True),
+                ], spacing=0, expand=True, scroll=ft.ScrollMode.AUTO),
+            ),
             bgcolor="#F2F2F7", expand=True)
         await self._mount_with_fade(root)
 
@@ -4158,10 +4506,12 @@ class MobileChatApp:
             self._option_row(t("仅IPv6"), cur == "ipv6", lambda e: self._switch_ip_mode("ipv6")),
         ])
         root = ft.Container(
-            content=ft.Column(controls=[
-                self._settings_nav(t("更改IP模式"), self.show_settings),
-                ft.Container(height=4), group, ft.Container(expand=True),
-            ], spacing=0, expand=True, scroll=ft.ScrollMode.AUTO),
+            content=self._safe_top(
+                ft.Column(controls=[
+                    self._settings_nav(t("更改IP模式"), self.show_settings),
+                    ft.Container(height=4), group, ft.Container(expand=True),
+                ], spacing=0, expand=True, scroll=ft.ScrollMode.AUTO),
+            ),
             bgcolor="#F2F2F7", expand=True)
         await self._mount_with_fade(root)
 
@@ -4257,6 +4607,35 @@ class MobileChatApp:
             _row(t("更改IP模式"), lambda e: self._ui(self.show_ip_mode_settings()), right_text=_ip_text),
         ])
 
+        # 自定义壁纸开关
+        _wp_enabled = load_wallpaper_enabled()
+        def _on_wallpaper_change(e):
+            try:
+                save_wallpaper_enabled(bool(e.control.value))
+            except Exception:
+                pass
+        # 选择壁纸行
+        _wp_pick_row = ft.Container(
+            content=ft.Row(controls=[
+                ft.Icon(ft.icons.WALLPAPER, size=20, color="#34C759"),
+                ft.Text(t("选择壁纸"), size=15, color=ft.Colors.GREY_900, expand=True),
+                ft.Text(load_wallpaper_file(), size=12, color=ft.Colors.GREY_400),
+                ft.Icon(ft.icons.CHEVRON_RIGHT, size=18, color=ft.Colors.GREY_400),
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=ft.padding.symmetric(vertical=10),
+        )
+        _wp_pick_row.on_click = self._tap(_wp_pick_row, lambda e: self._ui(self.show_wallpaper_picker()))
+
+        wallpaper_group = _group([
+            ft.Row(controls=[
+                ft.Icon(ft.icons.IMAGE, size=20, color="#34C759"),
+                ft.Text(t("自定义壁纸"), size=15, color=ft.Colors.GREY_900, expand=True),
+                ft.Switch(value=_wp_enabled, on_change=_on_wallpaper_change),
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ft.Container(height=0.5, bgcolor=ft.Colors.with_opacity(0.1, ft.Colors.GREY_400)),
+            _wp_pick_row,
+        ])
+
         other_group = _group([
             _row(t("崩溃日志"), lambda e: self._ui(self.show_crash_logs())),
         ])
@@ -4288,37 +4667,40 @@ class MobileChatApp:
         _top_controls = [nav, ft.Container(height=4), net_group]
         if offline_server_group is not None:
             _top_controls.append(offline_server_group)
-        _top_controls += [account_group, pref_group, other_group, bottom_group, logout_btn,
+        _top_controls += [account_group, pref_group, wallpaper_group, other_group, bottom_group, logout_btn,
                           ft.Container(expand=True), ver, ft.Container(height=16)]
         root = ft.Container(
-            content=ft.Column(controls=_top_controls,
-            spacing=0, expand=True, scroll=ft.ScrollMode.AUTO),
+            content=self._safe_top(
+                ft.Column(controls=_top_controls,
+                spacing=0, expand=True, scroll=ft.ScrollMode.AUTO),
+            ),
             bgcolor=_ios_bg, expand=True)
 
         await self._mount_with_fade(root, direction=direction)
 
     def _open_settings(self, e):
         self._btn_sound()
-        nick_btn = ft.ElevatedButton(t("修改昵称"), expand=True, height=44, on_click=self._open_nickname_dialog)
-        pwd_btn = ft.ElevatedButton(t("修改密码"), expand=True, height=44, on_click=self._open_password_dialog)
+        nick_btn = ft.ElevatedButton(t("修改昵称"), expand=True, height=44, on_click=lambda e: (self._btn_sound(), self._open_nickname_dialog(e)))
+        pwd_btn = ft.ElevatedButton(t("修改密码"), expand=True, height=44, on_click=lambda e: (self._btn_sound(), self._open_password_dialog(e)))
         # 三主题切换按钮
         def _make_theme_btn(label, mode, icon):
             is_active = (self._theme_mode == mode)
             return ft.ElevatedButton(label, expand=True, height=40, icon=icon,
                                       bgcolor=ft.Colors.GREEN_700 if is_active else None,
                                       color=ft.Colors.WHITE if is_active else None,
-                                      on_click=lambda ev: self._switch_theme(mode))
+                                      on_click=lambda ev: (self._btn_sound(), self._switch_theme(mode)))
         theme_row = ft.Row(controls=[
             _make_theme_btn(t("亮色"), "light", ft.icons.LIGHT_MODE),
             _make_theme_btn(t("暗色"), "dark", ft.icons.DARK_MODE),
             _make_theme_btn(t("跟随"), "system", ft.icons.SETTINGS),
         ], spacing=6)
-        reconn_btn = ft.ElevatedButton(t("重新连接"), expand=True, height=44, on_click=self._reconnect)
+        reconn_btn = ft.ElevatedButton(t("重新连接"), expand=True, height=44, on_click=lambda e: (self._btn_sound(), self._reconnect(e)))
         clear_btn = ft.ElevatedButton(t("清理聊天记录"), expand=True, height=44,
                                         bgcolor=ft.Colors.RED_500, color=ft.Colors.WHITE,
-                                        on_click=self._clear_chat_history)
+                                        on_click=lambda e: (self._btn_sound(), self._clear_chat_history(e)))
         logout_btn = ft.ElevatedButton(t("退出登录"), expand=True, height=44,
-                                        bgcolor=ft.Colors.RED_500, color=ft.Colors.WHITE, on_click=self._logout)
+                                        bgcolor=ft.Colors.RED_500, color=ft.Colors.WHITE,
+                                        on_click=lambda e: (self._btn_sound(), self._logout(e)))
         info = ft.Text(t("版本: {VERSION}\n用户: {user}").format(VERSION=VERSION, user=self.client.username), size=14, opacity=0.5)
         # IP版本切换（三个按钮）
         ip_mode_row = self._build_ip_mode_row()
@@ -4329,7 +4711,7 @@ class MobileChatApp:
                           size=13, opacity=0.5, selectable=True)
         def _lang_btn(label, code):
             return ft.ElevatedButton(label, expand=True, height=38,
-                                     on_click=lambda ev: self._switch_lang(code))
+                                     on_click=lambda ev: (self._btn_sound(), self._switch_lang(code)))
         lang_row = ft.Row(controls=[_lang_btn(t("中文"), "zh"), _lang_btn("English", "en")], spacing=6)
         content_card = ft.Card(content=ft.Container(
             content=ft.Column(controls=[nick_btn, pwd_btn, ft.Text(t("主题"), size=14, opacity=0.6), theme_row,
@@ -4344,7 +4726,7 @@ class MobileChatApp:
                                   animate_opacity=ft.Animation(250, ft.AnimationCurve.EASE_OUT)),
             actions=[ft.TextButton(t("关闭"), on_click=lambda x: self._close_dialog_with_fade(dlg))])
         self._active_dialog = dlg
-        self.page.show_dialog(dlg)
+        self._show_animated_dialog(dlg)
         def _fade_in():
             try:
                 dlg.content.opacity = 1
@@ -4403,7 +4785,7 @@ class MobileChatApp:
             content=ft.Column(controls=[field, pwd, msg], width=280, tight=True, spacing=8),
             actions=[ft.TextButton(t("取消"), on_click=lambda x: self.page.pop_dialog()),
                      ft.ElevatedButton(t("保存"), on_click=_save)])
-        self.page.show_dialog(dlg)
+        self._show_animated_dialog(dlg)
 
     def _change_nickname(self, new_name, password):
         def worker():
@@ -4436,7 +4818,7 @@ class MobileChatApp:
             content=ft.Column(controls=[old, new, msg], width=280, tight=True, spacing=8),
             actions=[ft.TextButton(t("取消"), on_click=lambda x: self.page.pop_dialog()),
                      ft.ElevatedButton(t("保存"), on_click=_save)])
-        self.page.show_dialog(dlg)
+        self._show_animated_dialog(dlg)
 
     def _change_password(self, old_pwd, new_pwd):
         def worker():
@@ -4596,24 +4978,25 @@ class MobileChatApp:
 
     # ==================== 提示音 ====================
     def _play_notify_sound(self):
-        """消息提示音：安卓用ft.Audio，Windows用winsound。"""
+        """消息提示音：安卓用ft.Audio(mp3)，Windows用winsound(wav)。"""
         try:
             if _is_android():
+                self._remount_audio_services()
                 if self._audio_notify:
                     self._android_play(self._audio_notify)
             else:
                 import winsound
-                wav = os.path.join(os.path.dirname(os.path.abspath(__file__)), "notify.wav")
+                wav = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   "Pixel-ChargingStarted.wav")
                 if os.path.exists(wav):
                     winsound.PlaySound(wav, winsound.SND_FILENAME | winsound.SND_ASYNC)
         except Exception:
             pass
 
     def _play_sound(self, wav_name, loop=False):
-        """通用音效播放：安卓用ft.Audio，Windows用winsound。"""
+        """通用音效播放：安卓用ft.Audio(mp3)，Windows用winsound(wav)。"""
         try:
             if _is_android():
-                # 重连后页面重建可能导致音频控件丢失，先兜底重新挂载
                 self._remount_audio_services()
                 _audio_map = {
                     "Alarm03.wav": self._audio_ring,
@@ -4684,13 +5067,73 @@ class MobileChatApp:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, func)
 
-    async def _mount_with_fade(self, content, direction="right"):
-        """页面切换：direction='right' 从右侧滑入（前进），'left' 从左侧滑入（返回）。"""
-        start_x = 1.0 if direction == "right" else -1.0
+    def _make_bg_semitransparent(self, control):
+        """递归把页面背景类 Container 的纯色 bgcolor 改成全透明，让壁纸完全透出来。
+        有 border_radius 的白色卡片改成 50% 半透明白色；带 _skip_wallpaper 标记的控件跳过。"""
         try:
+            if getattr(control, "_skip_wallpaper", False):
+                return
+            if hasattr(control, 'bgcolor') and control.bgcolor:
+                bg = str(control.bgcolor)
+                has_border_radius = bool(getattr(control, 'border_radius', None))
+                # 判断是否白色/浅灰系背景（卡片类）
+                _bg_upper = bg.upper()
+                is_white = ('WHITE' in _bg_upper
+                            or 'GREY_5' in _bg_upper or 'GREY_1' in _bg_upper
+                            or _bg_upper in ('#FFFFFF', '0XFFFFFF', '#FFFFFFFF')
+                            or _bg_upper.startswith('#FFF') or _bg_upper.startswith('0XFFF')
+                            or _bg_upper.startswith('#F2F2') or _bg_upper.startswith('#F5F5')
+                            or _bg_upper.startswith('#FAFA') or _bg_upper.startswith('#FCFC'))
+                if has_border_radius and is_white:
+                    # 白色/浅灰卡片：50% 半透明
+                    control.bgcolor = ft.Colors.with_opacity(0.5, ft.Colors.WHITE)
+                elif not has_border_radius and bg and 'opacity' not in bg and bg != 'None' and bg != 'TRANSPARENT':
+                    # 页面背景：全透明
+                    control.bgcolor = None
+            if hasattr(control, 'controls') and control.controls:
+                for c in control.controls:
+                    self._make_bg_semitransparent(c)
+            if hasattr(control, 'content') and control.content:
+                self._make_bg_semitransparent(control.content)
+        except Exception:
+            pass
+
+    def _wrap_wallpaper(self, content):
+        """给内容包一层自定义壁纸背景（启用时）。用 Container.image + DecorationImage。
+        关闭时直接返回 content，不做任何修改，自然恢复原样。"""
+        if not load_wallpaper_enabled():
+            return content
+        try:
+            self._make_bg_semitransparent(content)
+            import os
+            _wp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wallpapers")
+            _wp_file = load_wallpaper_file()
+            _wp = os.path.join(_wp_dir, _wp_file)
+            if not os.path.exists(_wp):
+                _wp = os.path.join(_wp_dir, "Pixel8-GreenFluorite.jpg")
+            return ft.Container(
+                content=content,
+                image=ft.DecorationImage(src=_wp, fit="cover"),
+                expand=True,
+            )
+        except Exception as _we:
+            print(f"[Mobile] wallpaper wrap failed: {_we}")
+            return content
+
+    async def _mount_with_fade(self, content, direction="right"):
+        """Android 14 风格页面切换：淡入 + 轻微缩放(0.96→1.0) + 极轻微位移。
+        direction='right' 前进（微微从右），'left' 返回（微微从左）。"""
+        start_x = 0.05 if direction == "right" else -0.05
+        try:
+            content = self._wrap_wallpaper(content)
             wrapper = ft.Container(
-                content=content, offset=ft.transform.Offset(start_x, 0),
+                content=content,
+                offset=ft.transform.Offset(start_x, 0),
                 animate_offset=ft.Animation(300, ft.AnimationCurve.EASE_OUT_CUBIC),
+                scale=ft.Scale(scale=0.96),
+                animate_scale=ft.Animation(300, ft.AnimationCurve.EASE_OUT_CUBIC),
+                opacity=0,
+                animate_opacity=ft.Animation(300, ft.AnimationCurve.EASE_OUT_CUBIC),
                 expand=True)
             self.page.controls.clear()
             self.page.controls.append(wrapper)
@@ -4702,9 +5145,11 @@ class MobileChatApp:
             self.page.update()
             await asyncio.sleep(0.03)
             wrapper.offset = ft.transform.Offset(0, 0)
+            wrapper.scale = ft.Scale(scale=1.0)
+            wrapper.opacity = 1
             self.page.update()
         except Exception as e:
-            self._log(f"page slide failed: {e}")
+            self._log(f"page transition failed: {e}")
             self.page.controls.clear()
             self.page.controls.append(content)
             try:

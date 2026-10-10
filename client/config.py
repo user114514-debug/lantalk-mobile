@@ -151,3 +151,51 @@ def clear_remember_me():
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
+
+
+# ============ 自定义壁纸 ============
+def load_wallpaper_enabled():
+    """加载是否启用自定义壁纸，默认关闭。"""
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                return bool(json.load(f).get("wallpaper_enabled", False))
+        except Exception:
+            pass
+    return False
+
+def save_wallpaper_enabled(enabled):
+    """保存是否启用自定义壁纸。"""
+    data = {}
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            pass
+    data["wallpaper_enabled"] = bool(enabled)
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def load_wallpaper_file():
+    """加载选中的壁纸文件名，默认 Pixel8-GreenFluorite.jpg。"""
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                return json.load(f).get("wallpaper_file", "Pixel8-GreenFluorite.jpg")
+        except Exception:
+            pass
+    return "Pixel8-GreenFluorite.jpg"
+
+def save_wallpaper_file(filename):
+    """保存选中的壁纸文件名。"""
+    data = {}
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            pass
+    data["wallpaper_file"] = filename
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)

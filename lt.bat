@@ -3,80 +3,96 @@ chcp 936 >nul
 cd /d "%~dp0"
 
 echo ============================================================
-echo   LanTalk ÒÆ¶¯¶Ë - Ò»¼ü´ò°ü APK ²¢ÍÆËÍµ½ GitHub Actions
+echo   LanTalk ï¿½Æ¶ï¿½ï¿½ï¿½ - Ò»ï¿½ï¿½ï¿½ï¿½ï¿½ APK ï¿½ï¿½ï¿½ï¿½ï¿½Íµï¿½ GitHub Actions
 echo ============================================================
 echo.
-echo µ±Ç°Ä¿Â¼: %cd%
+echo ï¿½ï¿½Ç°Ä¿Â¼: %cd%
 echo.
 
-REM ===== ´Ó pyproject.toml ¶ÁÈ¡°æ±¾ºÅ£¨Î¨Ò»ÕæÏàÔ´£¬±ÜÃâ²»Í¬²½£©=====
+REM ===== ï¿½ï¿½ pyproject.toml ï¿½ï¿½È¡ï¿½æ±¾ï¿½Å£ï¿½Î¨Ò»ï¿½ï¿½ï¿½ï¿½Ô´ï¿½ï¿½ï¿½ï¿½ï¿½â²»Í¬ï¿½ï¿½ï¿½ï¿½=====
 for /f "tokens=2 delims== " %%v in ('findstr /b /c:"version" pyproject.toml') do set APP_VER=%%v
 set APP_VER=%APP_VER:"=%
 if "%APP_VER%"=="" set APP_VER=4.0.0
-REM build-number ÓÃÈÕÆÚ YYYYMMDD£¬Ã¿´ÎÍÆËÍµ¥µ÷µÝÔö
+REM build-number ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ YYYYMMDDï¿½ï¿½Ã¿ï¿½ï¿½ï¿½ï¿½ï¿½Íµï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 set BNUM=%date:~0,4%%date:~5,2%%date:~8,2%
-echo Ó¦ÓÃ°æ±¾: %APP_VER%   /   build-number: %BNUM%
+echo Ó¦ï¿½Ã°æ±¾: %APP_VER%   /   build-number: %BNUM%
 echo.
 
-REM ========== 1. ¼ì²é Git ==========
-echo [1/9] ¼ì²é Git...
+REM ========== 1. ï¿½ï¿½ï¿½ Git ==========
+echo [1/9] ï¿½ï¿½ï¿½ Git...
 git --version >nul 2>&1
 if errorlevel 1 (
-    echo [´íÎó] Î´¼ì²âµ½ Git£¬ÇëÏÈ°²×°£º
+    echo [ï¿½ï¿½ï¿½ï¿½] Î´ï¿½ï¿½âµ½ Gitï¿½ï¿½ï¿½ï¿½ï¿½È°ï¿½×°ï¿½ï¿½
     echo https://git-scm.com/download/win
-    echo °²×°ºóÖØÐÂÔËÐÐ±¾½Å±¾¡£
+    echo ï¿½ï¿½×°ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ð±ï¿½ï¿½Å±ï¿½ï¿½ï¿½
     pause
     exit /b 1
 )
-echo   Git ÒÑ°²×°
+echo   Git ï¿½Ñ°ï¿½×°
 
-REM ========== 2. ÅäÖÃ Git ÓÃ»§ÐÅÏ¢ ==========
-echo [2/9] ÅäÖÃ Git ÓÃ»§ÐÅÏ¢...
+REM ========== 2. ï¿½ï¿½ï¿½ï¿½ Git ï¿½Ã»ï¿½ï¿½ï¿½Ï¢ ==========
+echo [2/9] ï¿½ï¿½ï¿½ï¿½ Git ï¿½Ã»ï¿½ï¿½ï¿½Ï¢...
 git config --global user.name >nul 2>&1
 if errorlevel 1 (
-    echo   Î´ÉèÖÃÓÃ»§Ãû£¬Ê¹ÓÃÄ¬ÈÏ...
+    echo   Î´ï¿½ï¿½ï¿½ï¿½ï¿½Ã»ï¿½ï¿½ï¿½ï¿½ï¿½Ê¹ï¿½ï¿½Ä¬ï¿½ï¿½...
     git config --global user.name "user114514-debug"
 )
 git config --global user.email >nul 2>&1
 if errorlevel 1 (
-    echo   Î´ÉèÖÃÓÊÏä£¬Ê¹ÓÃÄ¬ÈÏ...
+    echo   Î´ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ä£¬Ê¹ï¿½ï¿½Ä¬ï¿½ï¿½...
     git config --global user.email "user114514@example.com"
 )
-echo   ÓÃ»§ÐÅÏ¢ÒÑ¾ÍÐ÷
+echo   ï¿½Ã»ï¿½ï¿½ï¿½Ï¢ï¿½Ñ¾ï¿½ï¿½ï¿½
 
-REM ========== 3. È·ÈÏÏîÄ¿ÎÄ¼þÓë assets£¨È±ÁËÊÖ»ú¶Ë»á±À£©==========
-echo [3/9] ¼ì²éÏîÄ¿ÎÄ¼þÓë assets...
+REM ========== 3. È·ï¿½ï¿½ï¿½ï¿½Ä¿ï¿½Ä¼ï¿½ï¿½ï¿½ assetsï¿½ï¿½È±ï¿½ï¿½ï¿½Ö»ï¿½ï¿½Ë»ï¿½ï¿½ï¿½ï¿½==========
+echo [3/9] ï¿½ï¿½ï¿½ï¿½ï¿½Ä¿ï¿½Ä¼ï¿½ï¿½ï¿½ assets...
 set MISSING=0
 if not exist mobile_main.py (
     echo   [È±Ê§] mobile_main.py
     set MISSING=1
 )
 if not exist pyproject.toml (
-    echo   [È±Ê§] pyproject.toml£¨flet build ¿¿Ëü¾ö¶¨ APK ÒÀÀµ£©
+    echo   [È±Ê§] pyproject.tomlï¿½ï¿½flet build ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ APK ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
     set MISSING=1
 )
 if not exist assets\icon.png (
-    echo   [È±Ê§] assets\icon.png£¨Ó¦ÓÃÍ¼±ê£©
+    echo   [È±Ê§] assets\icon.pngï¿½ï¿½Ó¦ï¿½ï¿½Í¼ï¿½ê£©
     set MISSING=1
 )
 if not exist assets\fonts\Twemoji.ttf (
-    echo   [È±Ê§] assets\fonts\Twemoji.ttf£¨emoji/¹úÆì»ØÍË×ÖÌå£©
+    echo   [È±Ê§] assets\fonts\Twemoji.ttfï¿½ï¿½emoji/ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½å£©
     set MISSING=1
 )
-if not exist assets\flags (
-    echo   [È±Ê§] assets\flags\£¨¹úÆì PNG Ä¿Â¼£©
+if not exist assets\flags\ (
+    echo   [È±Ê§] assets\flags\ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ PNG Ä¿Â¼ï¿½ï¿½
+    set MISSING=1
+)
+if not exist scripts\desugaring-init.gradle (
+    echo   [È±Ê§] scripts\desugaring-init.gradle (Gradle desugaring, È±Ê§ï¿½á¹¹ï¿½ï¿½Ê§ï¿½ï¿½)
+    set MISSING=1
+)
+if not exist android_perms.py (
+    echo   [È±Ê§] android_perms.py (ï¿½ï¿½×¿ï¿½Ô´Ê±È¨ï¿½ï¿½Ä£ï¿½ï¿½)
+    set MISSING=1
+)
+if not exist client\ (
+    echo   [È±Ê§] client\ (ï¿½Í»ï¿½ï¿½Ëºï¿½ï¿½Ä´ï¿½ï¿½ï¿½ï¿½ï¿½)
+    set MISSING=1
+)
+if not exist wallpapers\ (
+    echo   [È±Ê§] wallpapers\ (ï¿½ï¿½ï¿½ï¿½Ä¿Â¼)
     set MISSING=1
 )
 if "%MISSING%"=="1" (
     echo.
-    echo [´íÎó] ¹Ø¼üÎÄ¼þÈ±Ê§£¬ÊÖ»ú¶ËÔËÐÐ»á±ÀÀ££¬Çë²¹ÆëºóÔÙÍÆËÍ¡£
+    echo [ï¿½ï¿½ï¿½ï¿½] ï¿½Ø¼ï¿½ï¿½Ä¼ï¿½È±Ê§ï¿½ï¿½ï¿½é¿´ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ð±ï¿½ï¿½É¾ï¿½ï¿½ï¿½ï¿½ï¿½Ù¿ï¿½Í¡ï¿½
     pause
     exit /b 1
 )
-echo   mobile_main.py / pyproject.toml / icon.png / Twemoji.ttf / flags/ È«²¿´æÔÚ
+echo   mobile_main.py / pyproject.toml / icon.png / Twemoji.ttf / flags/ / desugaring-init.gradle / android_perms.py / client/ / wallpapers/ È«ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 
-REM ========== 4. Éú³É/²¹È« requirements.txt£¨ÍêÕûÊÖ»ú¶ËÒÀÀµ£©==========
-echo [4/9] ¼ì²é requirements.txt...
+REM ========== 4. ï¿½ï¿½ï¿½ï¿½/ï¿½ï¿½È« requirements.txtï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ö»ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½==========
+echo [4/9] ï¿½ï¿½ï¿½ requirements.txt...
 if not exist requirements.txt (
     echo flet==0.86.5 > requirements.txt
     echo flet-audio>=0.86.0 >> requirements.txt
@@ -84,16 +100,16 @@ if not exist requirements.txt (
     echo cryptography>=42.0.0 >> requirements.txt
     echo pyjnius>=1.6.1 >> requirements.txt
     echo psutil>=7.0.0 >> requirements.txt
-    echo # ×ÀÃæµ÷ÊÔ×¨ÓÃ£¨²»´ò½ø APK£¬°²×¿×ßÔ­Éú MediaRecorder/pyjnius£©£º>> requirements.txt
+    echo # ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½×¨ï¿½Ã£ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ APKï¿½ï¿½ï¿½ï¿½×¿ï¿½ï¿½Ô­ï¿½ï¿½ MediaRecorder/pyjniusï¿½ï¿½ï¿½ï¿½>> requirements.txt
     echo sounddevice>=0.4.6 >> requirements.txt
     echo numpy>=1.26.0 >> requirements.txt
-    echo   ÒÑÉú³É requirements.txt£¨ÍêÕûÒÀÀµ£©
+    echo   ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ requirements.txtï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 ) else (
-    echo   requirements.txt: ´æÔÚ
+    echo   requirements.txt: ï¿½ï¿½ï¿½ï¿½
 )
 
-REM ========== 5. Éú³É .gitignore ==========
-echo [5/9] Éú³É .gitignore...
+REM ========== 5. ï¿½ï¿½ï¿½ï¿½ .gitignore ==========
+echo [5/9] ï¿½ï¿½ï¿½ï¿½ .gitignore...
 (
 echo __pycache__/
 echo *.pyc
@@ -117,22 +133,22 @@ echo out_*.txt
 echo *_trace.txt
 echo voice_tmp/
 ) > .gitignore
-echo   .gitignore ÒÑ¸üÐÂ£¨ÅÅ³ý±ÀÀ£ÈÕÖ¾¡¢²âÊÔ¡¢ÁÙÊ±µ÷ÊÔ½Å±¾¡¢voice_tmp£©
+echo   .gitignore ï¿½Ñ¸ï¿½ï¿½Â£ï¿½ï¿½Å³ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ö¾ï¿½ï¿½ï¿½ï¿½ï¿½Ô¡ï¿½ï¿½ï¿½Ê±ï¿½ï¿½ï¿½Ô½Å±ï¿½ï¿½ï¿½voice_tmpï¿½ï¿½
 
-REM ========== 6. ¹¹½¨Ç°×Ô¼ì£¨Óï·¨ + ¹úÆìÊýÁ¿£©==========
-echo [6/9] ¹¹½¨Ç°×Ô¼ì...
+REM ========== 6. ï¿½ï¿½ï¿½ï¿½Ç°ï¿½Ô¼ì£¨ï¿½ï·¨ + ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½==========
+echo [6/9] ï¿½ï¿½ï¿½ï¿½Ç°ï¿½Ô¼ï¿½...
 python -m py_compile mobile_main.py
 if errorlevel 1 (
-    echo   [´íÎó] mobile_main.py Óï·¨¼ì²éÊ§°Ü£¬ÐÞ¸´ºóÔÙÍÆËÍ¡£
+    echo   [ï¿½ï¿½ï¿½ï¿½] mobile_main.py ï¿½ï·¨ï¿½ï¿½ï¿½Ê§ï¿½Ü£ï¿½ï¿½Þ¸ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Í¡ï¿½
     pause
     exit /b 1
 )
-echo   mobile_main.py Óï·¨¼ì²éÍ¨¹ý
+echo   mobile_main.py ï¿½ï·¨ï¿½ï¿½ï¿½Í¨ï¿½ï¿½
 for /f %%a in ('dir /b assets\flags\*.png 2^>nul ^| find /c /v ""') do set FLAG_COUNT=%%a
-echo   ¹úÆì PNG ÊýÁ¿: %FLAG_COUNT%£¨Ó¦Îª 259£©
+echo   ï¿½ï¿½ï¿½ï¿½ PNG ï¿½ï¿½ï¿½ï¿½: %FLAG_COUNT%ï¿½ï¿½Ó¦Îª 259ï¿½ï¿½
 
-REM ========== 7. Éú³É GitHub Actions workflow ==========
-echo [7/9] Éú³É GitHub Actions ÅäÖÃ...
+REM ========== 7. ï¿½ï¿½ï¿½ï¿½ GitHub Actions workflow ==========
+echo [7/9] ï¿½ï¿½ï¿½ï¿½ GitHub Actions ï¿½ï¿½ï¿½ï¿½...
 if not exist .github\workflows mkdir .github\workflows
 del .github\workflows\build-apk.yml >nul 2>&1
 (
@@ -215,61 +231,61 @@ echo         with:
 echo           name: lantalk-apk
 echo           path: build/flutter/build/app/outputs/flutter-apk/app-release.apk
 ) > .github\workflows\build-apk.yml
-echo   build-apk.yml ÒÑÉú³É£¨v%APP_VER% / build %BNUM% / ´øÍ¼±ê / ÒÀÀµ¶Á requirements.txt£©
+echo   build-apk.yml ï¿½ï¿½ï¿½ï¿½ï¿½É£ï¿½v%APP_VER% / build %BNUM% / ï¿½ï¿½Í¼ï¿½ï¿½ / ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ requirements.txtï¿½ï¿½
 
-REM ========== 8. ³õÊ¼»¯ Git ²¢Ìá½» ==========
-echo [8/9] ³õÊ¼»¯ Git ²¢Ìá½»...
+REM ========== 8. ï¿½ï¿½Ê¼ï¿½ï¿½ Git ï¿½ï¿½ï¿½á½» ==========
+echo [8/9] ï¿½ï¿½Ê¼ï¿½ï¿½ Git ï¿½ï¿½ï¿½á½»...
 if not exist .git (
     git init
     git branch -M main
-    echo   ÒÑ³õÊ¼»¯ Git ²Ö¿â
+    echo   ï¿½Ñ³ï¿½Ê¼ï¿½ï¿½ Git ï¿½Ö¿ï¿½
 ) else (
-    echo   Git ²Ö¿âÒÑ´æÔÚ
+    echo   Git ï¿½Ö¿ï¿½ï¿½Ñ´ï¿½ï¿½ï¿½
 )
 git add .
-git commit -m "LanTalk mobile v%APP_VER% - emoji flags + dark theme fix + green UI + file drawer" >nul 2>&1
+git commit -m "LanTalk mobile v%APP_VER% - wallpaper picker + voice msg + offline mode + i18n + safe area" >nul 2>&1
 if errorlevel 1 (
-    echo   Ã»ÓÐÐÂµÄ¸Ä¶¯ÐèÒªÌá½»
+    echo   Ã»ï¿½ï¿½ï¿½ÂµÄ¸Ä¶ï¿½ï¿½ï¿½Òªï¿½á½»
 ) else (
-    echo   ÒÑÌá½»¸Ä¶¯
+    echo   ï¿½ï¿½ï¿½á½»ï¿½Ä¶ï¿½
 )
 
-REM ========== 9. ÍÆËÍµ½Ô¶³Ì²Ö¿â ==========
-echo [9/9] ÍÆËÍµ½ GitHub...
+REM ========== 9. ï¿½ï¿½ï¿½Íµï¿½Ô¶ï¿½Ì²Ö¿ï¿½ ==========
+echo [9/9] ï¿½ï¿½ï¿½Íµï¿½ GitHub...
 git remote remove origin >nul 2>&1
 git remote add origin https://github.com/user114514-debug/lantalk-mobile.git
 git push -f -u origin main
 
 if errorlevel 1 (
     echo.
-    echo [´íÎó] ÍÆËÍÊ§°Ü£¡
-    echo ¿ÉÄÜÔ­Òò£º
-    echo   1. ÐèÒªµÇÂ¼ GitHub£¨Ê×´ÎÍÆËÍ»áµ¯³öµÇÂ¼´°¿Ú£©
-    echo   2. ÍøÂçÎÊÌâ
+    echo [ï¿½ï¿½ï¿½ï¿½] ï¿½ï¿½ï¿½ï¿½Ê§ï¿½Ü£ï¿½
+    echo ï¿½ï¿½ï¿½ï¿½Ô­ï¿½ï¿½
+    echo   1. ï¿½ï¿½Òªï¿½ï¿½Â¼ GitHubï¿½ï¿½ï¿½×´ï¿½ï¿½ï¿½ï¿½Í»áµ¯ï¿½ï¿½ï¿½ï¿½Â¼ï¿½ï¿½ï¿½Ú£ï¿½
+    echo   2. ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
     echo.
     pause
     exit /b 1
 )
 
-REM ========== Íê³É ==========
+REM ========== ï¿½ï¿½ï¿½ ==========
 echo.
 echo ============================================================
-echo   ÍÆËÍ³É¹¦£¡GitHub Actions ÕýÔÚ¹¹½¨ APK
+echo   ï¿½ï¿½ï¿½Í³É¹ï¿½ï¿½ï¿½GitHub Actions ï¿½ï¿½ï¿½Ú¹ï¿½ï¿½ï¿½ APK
 echo ============================================================
 echo.
-echo   °æ±¾: %APP_VER% (build %BNUM%)
-echo   Ô¤¼ÆÐèÒª 8-10 ·ÖÖÓ¡£
+echo   ï¿½æ±¾: %APP_VER% (build %BNUM%)
+echo   Ô¤ï¿½ï¿½ï¿½ï¿½Òª 8-10 ï¿½ï¿½ï¿½Ó¡ï¿½
 echo.
-echo   ²é¿´¹¹½¨×´Ì¬£º
+echo   ï¿½é¿´ï¿½ï¿½ï¿½ï¿½×´Ì¬ï¿½ï¿½
 echo   https://github.com/user114514-debug/lantalk-mobile/actions
 echo.
-echo   ¹¹½¨Íê³Éºó£º
-echo   1. µã»÷ÂÌÉ« ¡Ì µÄÈÎÎñ
-echo   2. À­µ½µ×²¿ Artifacts
-echo   3. ÏÂÔØ lantalk-apk
-echo   4. ½âÑ¹µÃµ½ app-release.apk
-echo   5. ´«µ½ÊÖ»ú°²×°¼´¿É
+echo   ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Éºï¿½
+echo   1. ï¿½ï¿½ï¿½ï¿½ï¿½É« ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+echo   2. ï¿½ï¿½ï¿½ï¿½ï¿½×²ï¿½ Artifacts
+echo   3. ï¿½ï¿½ï¿½ï¿½ lantalk-apk
+echo   4. ï¿½ï¿½Ñ¹ï¿½Ãµï¿½ app-release.apk
+echo   5. ï¿½ï¿½ï¿½ï¿½ï¿½Ö»ï¿½ï¿½ï¿½×°ï¿½ï¿½ï¿½ï¿½
 echo.
-echo   ÕýÔÚ´ò¿ª Actions Ò³Ãæ...
+echo   ï¿½ï¿½ï¿½Ú´ï¿½ Actions Ò³ï¿½ï¿½...
 pause >nul
 start https://github.com/user114514-debug/lantalk-mobile/actions

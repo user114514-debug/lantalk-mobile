@@ -3,5 +3,7 @@
   "server_port": 9999,
   "ip_mode": "auto",
   "language": "zh",
-  "server_ipv6": ""
+  "server_ipv6": "",
+  "wallpaper_enabled": false,
+  "wallpaper_file": "Pixel8-14492.jpg"
 }
