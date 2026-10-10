@@ -223,7 +223,13 @@ echo           retry_on: error
 echo           command: ^|
 echo             export PATH="$HOME/.local/bin:$PATH"
 echo             rm -rf build/ .flet/
-echo             flet build apk --module-name mobile_main --project "LanTalk" --org "com.lantalk" --product "lantalk" --build-number "%BNUM%" --build-version "%APP_VER%"
+echo             flet build apk --module-name mobile_main --project "LanTalk" --org "com.lantalk" --product "lantalk" --build-number "%BNUM%" --build-version "%APP_VER%" || true
+echo             # Fix jni version mismatch: jni_flutter 1.0.4+1 needs jni ^1.1.0
+echo             cd build/flutter
+echo             printf '\ndependency_overrides:\n  jni: ^1.1.0\n' >> pubspec.yaml
+echo             flutter pub get
+echo             flutter build apk --release
+echo             cd ../..
 echo.
 echo       - name: Upload APK
 echo         uses: actions/upload-artifact@v4
