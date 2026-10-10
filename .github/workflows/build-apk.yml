@@ -70,15 +70,25 @@ jobs:
             export PATH="$HOME/.local/bin:$PATH"
             rm -rf build/ .flet/
             flet build apk --module-name mobile_main --project "LanTalk" --org "com.lantalk" --product "lantalk" --build-number "20261003" --build-version "4.0.0" || true
+            # Check if flet generated the project
+            echo "=== Listing build directory ==="
+            ls -la build/ 2>/dev/null || echo "build/ not found"
+            ls -la build/flutter/ 2>/dev/null || echo "build/flutter/ not found"
             # Fix jni version mismatch: jni_flutter 1.0.4+1 needs jni ^1.1.0
             cd build/flutter
             printf '\ndependency_overrides:\n  jni: ^1.1.0\n' >> pubspec.yaml
+            echo "=== pubspec.yaml tail ==="
+            tail -5 pubspec.yaml
             flutter pub get
             flutter build apk --release
+            echo "=== Searching for APK ==="
+            find . -name "*.apk" -type f 2>/dev/null
             cd ../..
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: lantalk-apk
-          path: build/flutter/build/app/outputs/flutter-apk/app-release.apk
+          path: |
+            build/flutter/build/app/outputs/flutter-apk/app-release.apk
+            build/flutter/build/**/*.apk
