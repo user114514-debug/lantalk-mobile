@@ -117,6 +117,7 @@ from client.ui.voice_udp import (
 )
 
 VERSION = "v4.0.0"
+HISTORY_PAGE_SIZE = 20  # 进入聊天时只渲染最近20条，下拉/点击加载更早的历史
 
 
 class MessageContent(ft.Container):
@@ -231,6 +232,10 @@ class MobileChatApp:
         self._nick_text = None
         self._device_row = None
         self._message_list = None
+        # 历史消息分页：每个会话当前已渲染的消息条数，进入时只显示最近 PAGE_SIZE 条
+        self._loaded_count = {}
+        self._history_loading = False
+        self._saved_scroll_pixel = 0
         self._input_field = None
         self._voice_duration_text = None
         self._voice_status_text = None
@@ -1560,7 +1565,7 @@ class MobileChatApp:
         )
 
         # 消息区（浅灰背景，无卡片边框）
-        self._message_list = ft.ListView(expand=True, spacing=6, padding=ft.padding.symmetric(horizontal=10, vertical=8), auto_scroll=True)
+        self._message_list = ft.ListView(expand=True, spacing=6, padding=ft.padding.symmetric(horizontal=10, vertical=8), auto_scroll=True, on_scroll=self._on_message_scroll)
         message_area = ft.Container(content=self._message_list, expand=True, bgcolor=_ios_bg)
 
         # 底部输入栏（毛玻璃）
@@ -1735,32 +1740,92 @@ class MobileChatApp:
             self._log(f"close drawer error: {e}")
 
     # ==================== 消息渲染 ====================
+    def _build_single_message_control(self, m, is_last=False):
+        """把单条消息对象渲染成对应的控件（文本/文件/语音/系统消息）。"""
+        if isinstance(m, FileMessage):
+            if getattr(m, "is_voice", False):
+                return self._build_voice_bubble(m)
+            return self._build_file_bubble(m)
+        if getattr(m, "is_voice_invite", False):
+            return self._build_voice_invite(m)
+        if m.is_system:
+            return ft.Container(content=ft.Text(m.text, size=14, opacity=0.5),
+                                alignment=ft.alignment.center, padding=ft.padding.symmetric(vertical=2))
+        # 最后一条消息加入场动画（自己发的从底部，别人发的从左侧），无打字机
+        return self._build_msg_bubble(m, fade_in=is_last)
+
     def _refresh_messages(self, conv_id):
         if conv_id != self.current_conv:
             return
         if self._message_list is None:
             return
         msgs = self.conversations.get(conv_id, [])
-        controls = []
         _total = len(msgs)
-        for i, m in enumerate(msgs):
+        # 分页：只渲染最后 loaded 条，进入聊天默认最近 HISTORY_PAGE_SIZE 条
+        loaded = self._loaded_count.get(conv_id, HISTORY_PAGE_SIZE)
+        start = max(0, _total - loaded)
+        controls = []
+        # 还有更早的历史：顶部放"加载更早消息"按钮
+        if start > 0:
+            load_more_btn = ft.Container(
+                content=ft.Text(t("点击加载更早消息（剩余 {n} 条）").format(n=start),
+                                size=13, color="#34C759", text_align=ft.TextAlign.CENTER),
+                alignment=ft.alignment.center, padding=ft.padding.symmetric(vertical=8),
+                border_radius=12, bgcolor=ft.Colors.with_opacity(0.08, "#34C759"),
+                on_click=lambda e: self._load_more_history(conv_id))
+            controls.append(load_more_btn)
+        for i in range(start, _total):
             is_last = (i == _total - 1)
-            if isinstance(m, FileMessage):
-                if getattr(m, "is_voice", False):
-                    controls.append(self._build_voice_bubble(m))
-                else:
-                    controls.append(self._build_file_bubble(m))
-            elif getattr(m, "is_voice_invite", False):
-                controls.append(self._build_voice_invite(m))
-            elif m.is_system:
-                controls.append(ft.Container(content=ft.Text(m.text, size=14, opacity=0.5),
-                                             alignment=ft.alignment.center, padding=ft.padding.symmetric(vertical=2)))
-            else:
-                # 最后一条消息加入场动画（自己发的从底部，别人发的从左侧），无打字机
-                wrap = self._build_msg_bubble(m, fade_in=is_last)
-                controls.append(wrap)
+            controls.append(self._build_single_message_control(msgs[i], is_last=is_last))
         self._message_list.controls = controls
         self._ui(self.page.update)
+
+    def _on_message_scroll(self, event):
+        """滚动到顶部时自动加载更早的历史消息（模拟下拉刷新）。"""
+        try:
+            pixels = getattr(event, "pixels", 0) or 0
+            min_extent = getattr(event, "min_scroll_extent", 0) or 0
+            # 距顶部小于 60px 且有更早历史时自动加载
+            if pixels <= min_extent + 60:
+                conv_id = self.current_conv
+                if conv_id:
+                    msgs = self.conversations.get(conv_id, [])
+                    loaded = self._loaded_count.get(conv_id, HISTORY_PAGE_SIZE)
+                    if len(msgs) > loaded:
+                        self._load_more_history(conv_id)
+        except Exception:
+            pass
+
+    def _load_more_history(self, conv_id):
+        """加载更早的历史消息：增加已渲染条数，重新渲染并保持滚动位置。"""
+        if conv_id != self.current_conv or self._history_loading:
+            return
+        self._history_loading = True
+        try:
+            msgs = self.conversations.get(conv_id, [])
+            _total = len(msgs)
+            old_loaded = self._loaded_count.get(conv_id, HISTORY_PAGE_SIZE)
+            new_loaded = min(_total, old_loaded + HISTORY_PAGE_SIZE)
+            # 记录加载前已渲染的消息条数，用于恢复滚动位置
+            old_start = max(0, _total - old_loaded)
+            old_rendered = _total - old_start
+            self._loaded_count[conv_id] = new_loaded
+            self._refresh_messages(conv_id)
+            # 恢复滚动位置：新加载了若干条，滚动到原来第一条消息的位置
+            added = new_loaded - old_loaded
+            if added > 0:
+                def _restore_scroll():
+                    try:
+                        # 滚动到第 added 个控件（跳过顶部加载按钮的偏移）
+                        self._message_list.scroll_to(index=added + (1 if old_start - added > 0 else 0),
+                                                     duration=0)
+                    except Exception:
+                        pass
+                self._ui(_restore_scroll)
+        finally:
+            def _unlock():
+                self._history_loading = False
+            threading.Timer(0.3, _unlock).start()
 
     def _build_msg_bubble(self, m, fade_in=False, animate_in=False):
         """消息气泡：[时间|用户名]行 + 气泡Card。
@@ -2818,6 +2883,7 @@ class MobileChatApp:
             animate_offset=ft.Animation(280, ft.AnimationCurve.EASE_OUT_CUBIC),
         )
         self._rec_sheet = panel
+        panel._skip_wallpaper = True  # 录音面板保持不透明白底，不被壁纸透明化
         # 高度放在 Container 自身（compat 的 Positioned 工厂会忽略 height 参数）
         self._rec_panel = ft.Positioned(left=0, right=0, bottom=0, content=panel)
         self._rec_panel.visible = False
@@ -2908,6 +2974,7 @@ class MobileChatApp:
             animate_offset=ft.Animation(280, ft.AnimationCurve.EASE_OUT_CUBIC),
         )
         self._file_drawer_sheet = sheet
+        sheet._skip_wallpaper = True  # 文件选择抽屉保持不透明白底，不被壁纸透明化
         self._file_drawer = ft.Positioned(left=0, right=0, bottom=0, content=sheet)
         self._file_drawer.visible = False
         sheet.visible = False
