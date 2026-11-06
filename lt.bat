@@ -231,7 +231,7 @@ echo           retry_on: error
 echo           command: ^|
 echo             export PATH="$HOME/.local/bin:$PATH"
 echo             rm -rf build/ .flet/
-echo             flet build apk --module-name mobile_main --project "LanTalk" --org "com.lantalk" --product "lantalk" --build-number "%BNUM%" --build-version "%APP_VER%"
+echo             flet build apk --module-name mobile_main --project "LanTalk" --org "com.lantalk" --product "lantalk" --build-number "%BNUM%" --build-version "%APP_VER%" --include-packages flet_audio
 echo             APK_PATH=$(find build -name "app-release.apk" -type f 2^>/dev/null | head -1)
 echo             echo "APK found at: $APK_PATH"
 echo             if [ -n "$APK_PATH" ]; then cp "$APK_PATH" "$GITHUB_WORKSPACE/app-release.apk"; ls -la "$GITHUB_WORKSPACE/app-release.apk"; else echo "ERROR: APK not found!"; find build -name "*.apk" -type f 2^>/dev/null; exit 1; fi
