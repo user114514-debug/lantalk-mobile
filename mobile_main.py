@@ -117,7 +117,9 @@ from client.ui.voice_udp import (
 )
 
 VERSION = "v4.0.0"
-HISTORY_PAGE_SIZE = 20  # 进入聊天时只渲染最近20条，下拉/点击加载更早的历史
+HISTORY_PAGE_SIZE = 20  # 每次滑到顶部加载20条更早历史
+INITIAL_LOAD_COUNT = 0  # 退出再进来不自动加载历史，页面空着，手动滑才加载
+MAX_VISIBLE_COUNT = 40  # 聊天中最多渲染40条，超过的旧消息自动折叠不渲染
 
 
 class MessageContent(ft.Container):
@@ -238,6 +240,10 @@ class MobileChatApp:
         self._loaded_count = {}
         self._history_loading = False
         self._saved_scroll_pixel = 0
+        # 用户是否停留在消息列表底部：在底部才自动滚，翻历史时不拽回
+        self._user_at_bottom = True
+        # 程序化滚底期间抑制顶部加载历史，避免平滑滚动经过顶部时误触发
+        self._suppress_top_load = False
         self._input_field = None
         self._voice_duration_text = None
         self._voice_status_text = None
@@ -1476,7 +1482,10 @@ class MobileChatApp:
         self._ui(_set)
 
     # ==================== 主界面（聊天） ====================
-    async def show_chat(self, direction="right"):
+    async def show_chat(self, direction="right", reconnect=True):
+        # 重新登录后重新加载本地历史消息（logout时清空了内存）
+        if not self.conversations:
+            self._load_chat_history()
         # iOS 风格颜色
         _ios_bg = "#F2F2F7"
         _ios_glass = ft.Colors.with_opacity(0.85, ft.Colors.WHITE)
@@ -1581,7 +1590,7 @@ class MobileChatApp:
         )
 
         # 消息区（浅灰背景，无卡片边框）
-        self._message_list = ft.ListView(expand=True, spacing=6, padding=ft.padding.symmetric(horizontal=10, vertical=8), auto_scroll=True, on_scroll=self._on_message_scroll)
+        self._message_list = ft.ListView(expand=True, spacing=6, padding=ft.padding.symmetric(horizontal=10, vertical=8), auto_scroll=False, on_scroll=self._on_message_scroll)
         message_area = ft.Container(content=self._message_list, expand=True, bgcolor=_ios_bg)
 
         # 底部输入栏（毛玻璃）
@@ -1666,7 +1675,7 @@ class MobileChatApp:
         if getattr(self, "_offline_mode", False):
             # 离线模式：不连服务器，跳过心跳/网络刷新/好友刷新
             self._append_system(t("已进入离线模式，功能不可用"), "public")
-        else:
+        elif reconnect:
             await self.refresh_friend_list()
             self._start_heartbeat()
             self._start_net_ui_refresh()
@@ -1675,6 +1684,10 @@ class MobileChatApp:
             self._refresh_messages(self.current_conv)
             self._append_system(t("已连接到聊天室"), "public")
             # 重连后页面重建，重新挂载音频控件（修复点击音效失效）
+            self._remount_audio_services()
+        else:
+            # 从设置等子页面返回：只重建UI，不重新连服务器、不弹"已连接到聊天室"
+            self._refresh_messages(self.current_conv)
             self._remount_audio_services()
         # 重连后恢复语音房间注册（TCP断开时服务器清理了语音注册，需重新voice_join）
         if self.voice_call and getattr(self.voice_call, "_running", False):
@@ -1756,21 +1769,34 @@ class MobileChatApp:
             self._log(f"close drawer error: {e}")
 
     # ==================== 消息渲染 ====================
-    def _build_single_message_control(self, m, is_last=False):
+    def _build_single_message_control(self, m, is_last=False, animate_in=False):
         """把单条消息对象渲染成对应的控件（文本/文件/语音/系统消息）。"""
         if isinstance(m, FileMessage):
             if getattr(m, "is_voice", False):
                 return self._build_voice_bubble(m)
-            return self._build_file_bubble(m, fade_in=is_last)
+            return self._build_file_bubble(m, fade_in=animate_in)
         if getattr(m, "is_voice_invite", False):
             return self._build_voice_invite(m)
         if m.is_system:
             return ft.Container(content=ft.Text(m.text, size=14, opacity=0.5),
                                 alignment=ft.alignment.center, padding=ft.padding.symmetric(vertical=2))
-        # 最后一条消息加入场动画（自己发的从底部，别人发的从左侧），无打字机
-        return self._build_msg_bubble(m, fade_in=is_last)
+        return self._build_msg_bubble(m, fade_in=animate_in, animate_in=animate_in)
 
-    def _refresh_messages(self, conv_id):
+    def _smooth_scroll_bottom(self):
+        """平滑滚到底，并在滚动期间抑制顶部加载历史误触发。"""
+        self._suppress_top_load = True
+        try:
+            async def _do():
+                try:
+                    await self._message_list.scroll_to(offset=999999, duration=250)
+                except Exception:
+                    pass
+            self._ui(_do())
+        except Exception:
+            pass
+        threading.Timer(0.35, lambda: setattr(self, "_suppress_top_load", False)).start()
+
+    def _refresh_messages(self, conv_id, incremental=False, force_scroll=False):
         if conv_id != self.current_conv:
             return
         if self._message_list is None:
@@ -1778,16 +1804,38 @@ class MobileChatApp:
         msgs = self.conversations.get(conv_id, [])
         _total = len(msgs)
         # 分页：只渲染最后 loaded 条，进入聊天默认最近 HISTORY_PAGE_SIZE 条
-        loaded = self._loaded_count.get(conv_id, HISTORY_PAGE_SIZE)
+        loaded = self._loaded_count.get(conv_id, INITIAL_LOAD_COUNT)
         start = max(0, _total - loaded)
+        # 增量模式：只追加最后一个气泡，不重建整个列表（避免重绘所有气泡闪屏）
+        if incremental and len(self._message_list.controls) > 0:
+            new_ctrl = self._build_single_message_control(msgs[-1], is_last=False, animate_in=True)
+            self._message_list.controls.append(new_ctrl)
+            self._ui(self._message_list.update)
+            # 只有自己发消息（force_scroll）或用户本来就在底部，才滚到底；翻历史时不打扰
+            if force_scroll or self._user_at_bottom:
+                self._smooth_scroll_bottom()
+            return
         controls = []
-        # 还有更早的历史：顶部放"加载更早消息"按钮
+        # 还有更早的历史：顶部放圆形刷新指示器 + 历史总数标签（平时半透明，点击加载）
         if start > 0:
+            _spin = ft.Container(
+                content=ft.Icon(ft.icons.REFRESH_ROUNDED, size=26, color="#34C759"),
+                width=52, height=52, border_radius=26,
+                bgcolor=ft.Colors.with_opacity(0.92, ft.Colors.WHITE),
+                alignment=ft.alignment.center,
+                shadow=ft.BoxShadow(blur_radius=8, color=ft.Colors.with_opacity(0.15, ft.Colors.BLACK),
+                                    offset=ft.Offset(0, 2)),
+            )
+            _hint = ft.Container(
+                content=ft.Text(t("共有 {n} 条历史消息").format(n=start),
+                                size=13, color=ft.Colors.GREY_700, text_align=ft.TextAlign.CENTER),
+                bgcolor=ft.Colors.with_opacity(0.85, ft.Colors.WHITE),
+                border_radius=14, padding=ft.padding.symmetric(horizontal=14, vertical=6),
+            )
             load_more_btn = ft.Container(
-                content=ft.Text(t("点击加载更早消息（剩余 {n} 条）").format(n=start),
-                                size=13, color="#34C759", text_align=ft.TextAlign.CENTER),
-                alignment=ft.alignment.center, padding=ft.padding.symmetric(vertical=8),
-                border_radius=12, bgcolor=ft.Colors.with_opacity(0.08, "#34C759"),
+                content=ft.Column(controls=[_spin, _hint],
+                                  horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=6),
+                alignment=ft.alignment.center, padding=ft.padding.only(top=10, bottom=10),
                 on_click=lambda e: self._load_more_history(conv_id))
             controls.append(load_more_btn)
         for i in range(start, _total):
@@ -1795,19 +1843,27 @@ class MobileChatApp:
             controls.append(self._build_single_message_control(msgs[i], is_last=is_last))
         self._message_list.controls = controls
         self._ui(self.page.update)
+        # 新消息/进入聊天页：在底部或自己发消息时平滑滚到底；翻历史时不拽回
+        if not getattr(self, "_history_loading", False) and (force_scroll or self._user_at_bottom):
+            self._smooth_scroll_bottom()
 
     def _on_message_scroll(self, event):
-        """滚动到顶部时自动加载更早的历史消息（模拟下拉刷新）。"""
+        """滚动到顶部时自动加载更早的历史消息。"""
         try:
             pixels = getattr(event, "pixels", 0) or 0
             min_extent = getattr(event, "min_scroll_extent", 0) or 0
+            max_extent = getattr(event, "max_scroll_extent", pixels) or pixels
+            # 记录用户是否停留在底部附近（200px 容差）
+            self._user_at_bottom = pixels >= max_extent - 200
             # 距顶部小于 60px 且有更早历史时自动加载
-            if pixels <= min_extent + 60:
+            # 程序化滚底期间（_suppress_top_load）不触发，否则平滑滚过顶部时会误加载历史把位置跳走
+            if pixels <= min_extent + 60 and not self._suppress_top_load:
                 conv_id = self.current_conv
                 if conv_id:
                     msgs = self.conversations.get(conv_id, [])
-                    loaded = self._loaded_count.get(conv_id, HISTORY_PAGE_SIZE)
-                    if len(msgs) > loaded:
+                    loaded = self._loaded_count.get(conv_id, INITIAL_LOAD_COUNT)
+                    # 初始 loaded=0 时不自动加载，等用户点顶部按钮
+                    if loaded > 0 and len(msgs) > loaded:
                         self._load_more_history(conv_id)
         except Exception:
             pass
@@ -1820,28 +1876,38 @@ class MobileChatApp:
         try:
             msgs = self.conversations.get(conv_id, [])
             _total = len(msgs)
-            old_loaded = self._loaded_count.get(conv_id, HISTORY_PAGE_SIZE)
+            old_loaded = self._loaded_count.get(conv_id, INITIAL_LOAD_COUNT)
             new_loaded = min(_total, old_loaded + HISTORY_PAGE_SIZE)
             # 记录加载前已渲染的消息条数，用于恢复滚动位置
             old_start = max(0, _total - old_loaded)
-            old_rendered = _total - old_start
             self._loaded_count[conv_id] = new_loaded
+            # 关键：加载历史时临时关闭 auto_scroll，否则重建列表后会被自动拉回底部，看不到新加载的消息
+            self._message_list.auto_scroll = False
             self._refresh_messages(conv_id)
             # 恢复滚动位置：新加载了若干条，滚动到原来第一条消息的位置
             added = new_loaded - old_loaded
             if added > 0:
                 def _restore_scroll():
                     try:
-                        # 滚动到第 added 个控件（跳过顶部加载按钮的偏移）
-                        self._message_list.scroll_to(index=added + (1 if old_start - added > 0 else 0),
-                                                     duration=0)
+                        async def _do():
+                            try:
+                                if old_loaded == 0:
+                                    # 第一次加载历史，直接滚到顶部
+                                    await self._message_list.scroll_to(offset=0, duration=0)
+                                else:
+                                    await self._message_list.scroll_to(offset=added * 80, duration=0)
+                            except Exception:
+                                pass
+                        self._ui(_do())
                     except Exception:
                         pass
                 self._ui(_restore_scroll)
         finally:
             def _unlock():
                 self._history_loading = False
-            threading.Timer(0.3, _unlock).start()
+                # 全程保持 auto_scroll=False（ListView 初始就是 False），不再改回 True，
+                # 否则插件会和手动 scroll_to 抢着滚底，造成气泡闪烁/位置跳动
+            threading.Timer(0.5, _unlock).start()
 
     def _update_file_progress(self, file_id, percent, status_prefix):
         """直接更新文件进度条的 scale 和状态文字，不重建气泡，实现平滑动画。
@@ -1897,19 +1963,26 @@ class MobileChatApp:
                 border_radius=ft.BorderRadius(top_left=18, top_right=18, bottom_left=4, bottom_right=18),
                 bgcolor=ft.Colors.with_opacity(0.9, ft.Colors.WHITE),
             )
-        # 时间（HH:MM），主题自适应用opacity，调大字号更明显
+        # 时间（HH:MM），小而淡，紧贴气泡
         time_str = m.timestamp.strftime("%H:%M") if hasattr(m, "timestamp") and m.timestamp else ""
-        time_text = ft.Text(time_str, size=13, opacity=0.5) if time_str else ft.Container(width=0, height=0)
-        # 用户名：别人的消息显示，调大字号+提高对比度，自己的不显示
-        sender_text = ft.Text(m.sender, size=14, opacity=0.7, weight=ft.FontWeight.W_500) if (not m.is_self and m.sender) else ft.Container(width=0, height=0)
-        # 用SPACE_BETWEEN确保时间左、用户名右，占满整行宽度
-        meta_row = ft.Row(controls=[time_text, sender_text], spacing=4,
-                          alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                          vertical_alignment=ft.CrossAxisAlignment.CENTER)
-        row = ft.Row(controls=[ft.Container(expand=True), bubble_card] if m.is_self else [bubble_card, ft.Container(expand=True)],
-                      alignment=ft.MainAxisAlignment.END if m.is_self else ft.MainAxisAlignment.START)
-        inner_col = ft.Column(controls=[meta_row, row], spacing=1,
-                              horizontal_alignment=ft.CrossAxisAlignment.END if m.is_self else ft.CrossAxisAlignment.START)
+        time_text = ft.Text(time_str, size=11, opacity=0.45) if time_str else ft.Container(width=0, height=0)
+        # 用户名：别人的消息显示在气泡上方靠左，自己的不显示
+        sender_text = ft.Text(m.sender, size=12, opacity=0.6, weight=ft.FontWeight.W_500) if (not m.is_self and m.sender) else ft.Container(width=0, height=0)
+        if m.is_self:
+            # 自己发的（右对齐）：时间在气泡上方靠右，和气泡同侧，不推到左边
+            meta_row = ft.Row(controls=[time_text], alignment=ft.MainAxisAlignment.END)
+            row = ft.Row(controls=[ft.Container(expand=True), bubble_card],
+                         alignment=ft.MainAxisAlignment.END)
+            inner_col = ft.Column(controls=[meta_row, row], spacing=1,
+                                  horizontal_alignment=ft.CrossAxisAlignment.END)
+        else:
+            # 别人发的（左对齐）：用户名和时间同一行，时间跟在用户名后空几格，下面是气泡
+            sender_and_time = ft.Row(controls=[sender_text, time_text], spacing=10,
+                                     vertical_alignment=ft.CrossAxisAlignment.CENTER)
+            row = ft.Row(controls=[bubble_card, ft.Container(expand=True)],
+                         alignment=ft.MainAxisAlignment.START)
+            inner_col = ft.Column(controls=[sender_and_time, row], spacing=1,
+                                  horizontal_alignment=ft.CrossAxisAlignment.START)
 
         # Pixel 风格入场动画初始状态
         _animating = fade_in or animate_in
@@ -1925,11 +1998,11 @@ class MobileChatApp:
         animated_wrap = ft.Container(
             content=inner_col,
             opacity=0 if _animating else 1,
-            animate_opacity=ft.Animation(260, ft.AnimationCurve.EASE_OUT_CUBIC),
+            animate_opacity=ft.Animation(400, ft.AnimationCurve.EASE_OUT_CUBIC),
             offset=_init_offset if _animating else None,
-            animate_offset=ft.Animation(280, ft.AnimationCurve.EASE_OUT_CUBIC) if _animating else None,
+            animate_offset=ft.Animation(400, ft.AnimationCurve.EASE_OUT_CUBIC) if _animating else None,
             scale=ft.Scale(scale=_init_scale) if _animating else None,
-            animate_scale=ft.Animation(280, ft.AnimationCurve.EASE_OUT_CUBIC) if _animating else None,
+            animate_scale=ft.Animation(400, ft.AnimationCurve.EASE_OUT_CUBIC) if _animating else None,
             margin=ft.margin.symmetric(vertical=1))
 
         if _animating:
@@ -1938,10 +2011,10 @@ class MobileChatApp:
                     animated_wrap.opacity = 1
                     animated_wrap.offset = ft.transform.Offset(0, 0)
                     animated_wrap.scale = ft.Scale(scale=1.0)
-                    self.page.update()
+                    self._ui(self.page.update)
                 except Exception:
                     pass
-            threading.Timer(0.05, _do_animate).start()
+            threading.Timer(0.12, _do_animate).start()
 
         animated_wrap._msg_text_ctrl = msg_text
         animated_wrap._msg_card = bubble_card
@@ -2083,21 +2156,21 @@ class MobileChatApp:
             animated_wrap = ft.Container(
                 content=row,
                 opacity=0,
-                animate_opacity=ft.Animation(260, ft.AnimationCurve.EASE_OUT_CUBIC),
+                animate_opacity=ft.Animation(400, ft.AnimationCurve.EASE_OUT_CUBIC),
                 offset=_init_offset,
-                animate_offset=ft.Animation(280, ft.AnimationCurve.EASE_OUT_CUBIC),
+                animate_offset=ft.Animation(400, ft.AnimationCurve.EASE_OUT_CUBIC),
                 scale=ft.Scale(scale=_init_scale),
-                animate_scale=ft.Animation(280, ft.AnimationCurve.EASE_OUT_CUBIC),
+                animate_scale=ft.Animation(400, ft.AnimationCurve.EASE_OUT_CUBIC),
                 margin=ft.margin.symmetric(vertical=1))
             def _do_animate():
                 try:
                     animated_wrap.opacity = 1
                     animated_wrap.offset = ft.transform.Offset(0, 0)
                     animated_wrap.scale = ft.Scale(scale=1.0)
-                    self.page.update()
+                    self._ui(self.page.update)
                 except Exception:
                     pass
-            threading.Timer(0.05, _do_animate).start()
+            threading.Timer(0.12, _do_animate).start()
             return animated_wrap
         return row
 
@@ -2260,24 +2333,35 @@ class MobileChatApp:
                 _blocked, _plain = self._intercept_crypto_signal(text, _peer)
                 if _blocked:
                     if _plain is not None and not is_self:
+                        # 解密后的明文也要检查是否为文件通知（加密文件通知离线推送时的关键修复）
+                        _is_f, _fid, _fname = FileTransferClient.parse_file_notify(_plain)
+                        if _is_f:
+                            await self._handle_incoming_file(_fid, _fname, sender, conv_id)
+                            return
+                        # 解密后的明文也要检查语音信令
+                        _vsig = parse_voice_signal(_plain)
+                        if _vsig:
+                            _st, _vc, _ve, _vx = _vsig
+                            await self._handle_voice_signal(_st, _vc, _ve, _vx, is_self)
+                            return
                         self.conversations[conv_id].append(
                             ChatMessage(text=_plain, is_self=is_self, sender=sender))
-                        self._save_conv_history(conv_id)
+                        threading.Thread(target=self._save_conv_history, args=(conv_id,), daemon=True).start()
                         if conv_id != self.current_conv:
                             self._unread[conv_id] = self._unread.get(conv_id, 0) + 1
                             self._refresh_friend_chips()
                         else:
-                            self._refresh_messages(conv_id)
+                            self._refresh_messages(conv_id, incremental=True)
                     return
                 # 自己发的私聊消息已在 send_message 中本地添加，跳过服务器回传避免重复
                 if not is_self:
                     self.conversations[conv_id].append(ChatMessage(text=text, is_self=is_self, sender=sender))
-                    self._save_conv_history(conv_id)
+                    threading.Thread(target=self._save_conv_history, args=(conv_id,), daemon=True).start()
                     if conv_id != self.current_conv:
                         self._unread[conv_id] = self._unread.get(conv_id, 0) + 1
                         self._refresh_friend_chips()
                     else:
-                        self._refresh_messages(conv_id)
+                        self._refresh_messages(conv_id, incremental=True)
                     self._play_notify_sound()
             else:
                 text = payload.get("text", "")
@@ -2304,20 +2388,20 @@ class MobileChatApp:
                     if _plain is not None and not is_self:
                         self.conversations.setdefault("public", []).append(
                             ChatMessage(text=_plain, is_self=is_self, sender=sender))
-                        self._save_conv_history("public")
+                        threading.Thread(target=self._save_conv_history, args=("public",), daemon=True).start()
                         if self.current_conv == "public":
-                            self._refresh_messages("public")
+                            self._refresh_messages("public", incremental=True)
                     return
                 # 自己发的公共消息已经在 send_message 中本地添加了，跳过避免重复
                 if not is_self:
                     show_text = self._localize_system(actual_text) if is_system else actual_text
                     self.conversations.setdefault("public", []).append(
                         ChatMessage(text=show_text, is_self=is_self, sender=sender, is_system=is_system))
-                    self._save_conv_history("public")
+                    threading.Thread(target=self._save_conv_history, args=("public",), daemon=True).start()
+                    if self.current_conv == "public":
+                        self._refresh_messages("public", incremental=True)
                 if is_system and ("加入了聊天室" in actual_text or "离开了聊天室" in actual_text):
                     await self.refresh_friend_list()
-                if self.current_conv == "public":
-                    self._refresh_messages("public")
                 if not is_self and not is_system:
                     self._play_notify_sound()
         except Exception as e:
@@ -2371,7 +2455,7 @@ class MobileChatApp:
             return
         try:
             if self.current_conv == "public":
-                self.client.send_text(text)
+                await self._run_in_thread(lambda: self.client.send_text(text))
             else:
                 target = self.current_conv[7:]
                 _crypto_mgr = getattr(self, "_crypto_mgr", None)
@@ -2384,13 +2468,12 @@ class MobileChatApp:
             self.conversations.setdefault(self.current_conv, [])
             self.conversations[self.current_conv].append(
                 ChatMessage(text=text, is_self=True, sender=self.client.username or ""))
-            self._save_conv_history(self.current_conv)
-            self._refresh_messages(self.current_conv)
+            threading.Thread(target=self._save_conv_history, args=(self.current_conv,), daemon=True).start()
+            self._refresh_messages(self.current_conv, incremental=True, force_scroll=True)
             # 等气泡动画渲染完成（280ms）后播放发送音效
             threading.Timer(0.32, self._send_sound).start()
         except Exception as e:
             self._append_system(t("发送失败：{e}").format(e=e))
-        self._ui(self.page.update)
 
     # ==================== 好友 / 设备列表 ====================
     async def get_friend_list(self):
@@ -2811,8 +2894,6 @@ class MobileChatApp:
         threading.Thread(target=worker, daemon=True).start()
 
     async def _handle_incoming_file(self, file_id, filename, sender, conv_id):
-        if not self.file_transfer:
-            return
         voice_like = self._is_voice_filename(filename)
         if voice_like:
             # 语音消息保持自动下载（即时播放）
@@ -2821,7 +2902,10 @@ class MobileChatApp:
             self.conversations.setdefault(conv_id, []).append(fm)
             self._save_conv_history(conv_id)
             self._refresh_messages(conv_id)
-            self._start_file_download(fm, sender, conv_id)
+            if self.file_transfer:
+                self._start_file_download(fm, sender, conv_id)
+            else:
+                fm.status = "pending"  # file_transfer未就绪，先存本地，等用户点接收
         else:
             # 普通文件：待接收状态，不自动下载
             fm = FileMessage(filename=filename, file_id=file_id, is_self=False, sender=sender,
@@ -3810,6 +3894,16 @@ class MobileChatApp:
             self._playing_voice_m = None
             self._append_system(t("播放失败: {e}").format(e=ex))
             return
+        # 兜底 watchdog：30秒后如果还在"播放中"状态但 MediaPlayer 已停，强制复位
+        def _watchdog():
+            try:
+                if self._playing_voice_m is m and not vmsg.is_playing():
+                    self._playing_voice_m = None
+                    self._voice_wave_running = False
+                    self._ui(self._refresh_messages, self.current_conv)
+            except Exception:
+                pass
+        threading.Timer(30.0, _watchdog).start()
         self._ui(self._start_voice_wave_loop)
 
     async def _start_voice_wave_loop(self):
@@ -4226,7 +4320,7 @@ class MobileChatApp:
                 animate_opacity=ft.Animation(220, ft.AnimationCurve.EASE_OUT),
             )
             dlg.content = animated_content
-            self._show_animated_dialog(dlg)
+            self.page.show_dialog(dlg)
             def _animate():
                 try:
                     animated_content.scale = ft.Scale(scale=1.0)
@@ -4237,7 +4331,7 @@ class MobileChatApp:
             threading.Timer(0.05, _animate).start()
         except Exception:
             try:
-                self._show_animated_dialog(dlg)
+                self.page.show_dialog(dlg)
             except Exception:
                 pass
 
@@ -4546,7 +4640,7 @@ class MobileChatApp:
 
         def _back(e=None):
             self._btn_sound()
-            self._ui(self.show_chat(direction="left"))
+            self._ui(self.show_chat(direction="left", reconnect=False))
 
         nav = ft.Container(
             content=ft.Row(controls=[
@@ -4582,7 +4676,7 @@ class MobileChatApp:
             except Exception:
                 pass
             await self.send_file(path)
-            await self.show_chat(direction="left")
+            await self.show_chat(direction="left", reconnect=False)
         self._ui(_do())
 
     async def show_wallpaper_picker(self, direction="right"):
@@ -5079,7 +5173,7 @@ class MobileChatApp:
         # 顶部导航
         back = ft.Container(content=ft.Text(t("退出"), size=16, color="#34C759"),
                             padding=ft.padding.symmetric(horizontal=8, vertical=8),
-                            on_click=lambda e: self._ui(self.show_chat(direction="left")))
+                            on_click=lambda e: self._ui(self.show_chat(direction="left", reconnect=False)))
         nav = ft.Container(
             content=ft.Row(controls=[
                 back,
@@ -5505,7 +5599,17 @@ class MobileChatApp:
                     if self._net_latency_text:
                         self._net_latency_text.value = t("{avg:.0f}ms").format(avg=avg)
                         self._net_latency_text.color = color
-                    self._ui(self.page.update)
+                    # 只更新这两个文字控件，不要 page.update()——否则 ListView 会被拉回底部
+                    _txt = txt
+                    _ltxt = self._net_latency_text
+                    def _upd():
+                        try:
+                            _txt.update()
+                            if _ltxt:
+                                _ltxt.update()
+                        except Exception:
+                            pass
+                    self._ui(_upd)
             except Exception:
                 pass
             time.sleep(0.5)
@@ -5672,15 +5776,18 @@ class MobileChatApp:
         start_x = 0.05 if direction == "right" else -0.05
         try:
             content = self._wrap_wallpaper(content)
+            # 壁纸开启时：壁纸层立刻全显不做淡入，只做缩放位移（避免白闪）；关闭时白底+完整淡入
+            _wp_on = load_wallpaper_enabled()
+            _init_op = 1 if _wp_on else 0
             wrapper = ft.Container(
                 content=content,
                 offset=ft.transform.Offset(start_x, 0),
                 animate_offset=ft.Animation(300, ft.AnimationCurve.EASE_OUT_CUBIC),
                 scale=ft.Scale(scale=0.96),
                 animate_scale=ft.Animation(300, ft.AnimationCurve.EASE_OUT_CUBIC),
-                opacity=0,
-                animate_opacity=ft.Animation(300, ft.AnimationCurve.EASE_OUT_CUBIC),
-                expand=True, bgcolor=ft.Colors.WHITE)
+                opacity=_init_op,
+                animate_opacity=ft.Animation(300, ft.AnimationCurve.EASE_OUT_CUBIC) if not _wp_on else None,
+                expand=True, bgcolor=None if _wp_on else ft.Colors.WHITE)
             self.page.controls.clear()
             self.page.controls.append(wrapper)
             try:
@@ -5718,6 +5825,11 @@ class MobileChatApp:
 
     def _ui(self, coro_or_func, *args):
         if coro_or_func is None or self.page is None or self._loop is None:
+            return
+        # session 已销毁（app退出/关闭）时静默跳过，不刷 traceback
+        try:
+            _ = self.page.session
+        except Exception:
             return
         try:
             if asyncio.iscoroutine(coro_or_func):

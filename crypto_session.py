@@ -31,6 +31,7 @@ if _ROOT not in sys.path:
 
 from crypto.ecdh_key import ECDHKeyExchange, PUBLIC_KEY_SIZE
 from crypto.crypto_packet import CryptoPacket, TamperError, ReplayError
+from crypto.identity_auth import IdentityKey, IdentityError, IDENTITY_KEY_SIZE, SIGNATURE_SIZE
 
 
 KEY_PREFIX = "LT1:KEY:"
@@ -54,6 +55,60 @@ class CryptoSessionManager:
         self.on_session_ready = None
         self.on_security_alert = None
         self.on_status = None
+        # Ed25519 身份密钥（长期），首次生成后保存本地，TOFU 信任对端公钥
+        self.identity = self._load_or_create_identity()
+        self._known_identity_pubs = self._load_known_pubs()  # peer -> ed25519_pub(bytes)
+
+    def _identity_path(self):
+        return os.path.join(_ROOT, ".lt_identity.key")
+
+    def _known_pubs_path(self):
+        return os.path.join(_ROOT, ".lt_known_pubs.json")
+
+    def _load_or_create_identity(self):
+        """加载或生成 Ed25519 长期身份密钥。"""
+        path = self._identity_path()
+        try:
+            if os.path.exists(path):
+                with open(path, "rb") as f:
+                    priv = f.read()
+                if len(priv) == 32:
+                    return IdentityKey(private_bytes=priv)
+        except Exception:
+            pass
+        ident = IdentityKey()
+        try:
+            with open(path, "wb") as f:
+                f.write(ident.export_private())
+            try:
+                os.chmod(path, 0o600)
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"[identity] 保存身份密钥失败: {e}")
+        return ident
+
+    def _load_known_pubs(self):
+        """加载 TOFU 已知对端身份公钥 {username: b64(pub)}。"""
+        path = self._known_pubs_path()
+        try:
+            if os.path.exists(path):
+                import json
+                with open(path, "r", encoding="utf-8") as f:
+                    raw = json.load(f)
+                return {u: base64.b64decode(p) for u, p in raw.items()}
+        except Exception:
+            pass
+        return {}
+
+    def _save_known_pubs(self):
+        try:
+            import json
+            data = {u: base64.b64encode(p).decode("ascii") for u, p in self._known_identity_pubs.items()}
+            with open(self._known_pubs_path(), "w", encoding="utf-8") as f:
+                json.dump(data, f)
+        except Exception as e:
+            print(f"[identity] 保存已知公钥失败: {e}")
 
     def set_self_username(self, username: str):
         self.username = username or ""
@@ -77,8 +132,14 @@ class CryptoSessionManager:
                 pass
 
     def public_key_message(self) -> str:
-        pub_b64 = base64.b64encode(self.ecdh.get_public_key_bytes()).decode("ascii")
-        return KEY_PREFIX + pub_b64
+        ecdh_pub = self.ecdh.get_public_key_bytes()
+        ecdh_b64 = base64.b64encode(ecdh_pub).decode("ascii")
+        ident_pub = self.identity.export_public()
+        ident_b64 = base64.b64encode(ident_pub).decode("ascii")
+        sig = self.identity.sign(ecdh_pub)
+        sig_b64 = base64.b64encode(sig).decode("ascii")
+        # 三段：ECDH公钥.身份公钥.签名
+        return KEY_PREFIX + ecdh_b64 + "." + ident_b64 + "." + sig_b64
 
     def send_my_key(self, peer: str) -> bool:
         if not peer or not self._transport:
@@ -94,9 +155,38 @@ class CryptoSessionManager:
 
     def _handle_peer_key(self, peer: str, pub_b64: str):
         try:
-            peer_pub = base64.b64decode(pub_b64.strip())
+            # 新格式三段：ecdh_pub.identity_pub.signature（旧格式两段直接信任，兼容）
+            parts = pub_b64.split(".")
+            peer_ident_pub = None
+            signature = None
+            if len(parts) == 3:
+                ecdh_b64, ident_b64, sig_b64 = parts
+                peer_pub = base64.b64decode(ecdh_b64.strip())
+                peer_ident_pub = base64.b64decode(ident_b64.strip())
+                signature = base64.b64decode(sig_b64.strip())
+            else:
+                # 旧版客户端不支持验签，降级信任（兼容）
+                peer_pub = base64.b64decode(pub_b64.strip())
+
             if len(peer_pub) != PUBLIC_KEY_SIZE:
                 raise ValueError(f"公钥长度错误: {len(peer_pub)}")
+
+            # Ed25519 验签（新格式才有）
+            if peer_ident_pub and signature:
+                if len(peer_ident_pub) != IDENTITY_KEY_SIZE:
+                    raise IdentityError(f"对端身份公钥长度错误: {len(peer_ident_pub)}")
+                # 验证签名：用对端身份公钥验证 ECDH 公钥的签名
+                IdentityKey.verify(peer_ident_pub, peer_pub, signature)
+                # TOFU：首次见则记录，再次见则对比，不一致=中间人攻击警告
+                known = self._known_identity_pubs.get(peer)
+                if known is None:
+                    self._known_identity_pubs[peer] = peer_ident_pub
+                    self._save_known_pubs()
+                    self._emit_status(f"首次验证 {peer} 身份，已记录公钥指纹")
+                elif known != peer_ident_pub:
+                    self._emit_alert(peer, "MITM_WARNING",
+                        f"⚠️ {peer} 的身份公钥已变更！可能遭遇中间人攻击。如非本人换设备，请勿信任！")
+
             aes_key = self.ecdh.derive_shared_key(peer_pub)
             with self._lock:
                 self.sessions[peer] = {
@@ -104,8 +194,9 @@ class CryptoSessionManager:
                     "send": CryptoPacket(aes_key, mode=self.mode),
                     "recv": CryptoPacket(aes_key, mode=self.mode),
                     "ready": True,
+                    "verified": bool(peer_ident_pub),
                 }
-            self._emit_status(f"已与 {peer} 建立加密通道")
+            self._emit_status(f"已与 {peer} 建立加密通道" + ("（已验签）" if peer_ident_pub else "（未验签-旧版）"))
             if self.on_session_ready:
                 try:
                     self.on_session_ready(peer)
@@ -114,6 +205,8 @@ class CryptoSessionManager:
             if peer not in self.sent_keys:
                 self.send_my_key(peer)
             self._flush_pending(peer)
+        except IdentityError as e:
+            self._emit_alert(peer, "IdentityError", f"身份验签失败: {e}")
         except Exception as e:
             self._emit_alert(peer, "KeyError", f"公钥协商失败: {e}")
 

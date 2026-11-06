@@ -70,8 +70,9 @@ class FileTransferClient:
         file_size = os.path.getsize(filepath)
         if file_size == 0:
             return False, None, filename, t("文件为空")
-        if file_size > 200 * 1024 * 1024:
-            return False, None, filename, t("文件过大（上限200MB）")
+        # 无大小限制（留10GB安全阀防磁盘撑爆，实际等同无限发文件）
+        if file_size > 10 * 1024 * 1024 * 1024:
+            return False, None, filename, t("文件过大（上限10GB）")
         total_chunks = (file_size + CHUNK_SIZE - 1) // CHUNK_SIZE
         md5_hash = hashlib.md5()
         with open(filepath, "rb") as f:
@@ -93,7 +94,7 @@ class FileTransferClient:
                 data_b64 = base64.b64encode(chunk_data).decode("ascii")
                 result = self._temp_request("file_upload_chunk", {
                     "file_id": file_id, "chunk_index": i, "data": data_b64,
-                }, timeout=60)
+                }, timeout=300)
                 if not result.get("ok"):
                     return False, file_id, filename, result.get("message", t("第 {i} 块上传失败").format(i=i+1))
                 if on_progress:
@@ -129,7 +130,7 @@ class FileTransferClient:
                 result = self._temp_request("file_download_chunk", {
                     "file_id": file_id,
                     "chunk_index": i,
-                }, timeout=60)
+                }, timeout=300)
                 if not result.get("ok"):
                     return False, None, result.get("message", t("第 {i} 块下载失败").format(i=i+1))
                 chunk_data = base64.b64decode(result["data"])

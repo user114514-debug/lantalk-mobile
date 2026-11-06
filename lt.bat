@@ -138,6 +138,10 @@ echo err_*.txt
 echo out_*.txt
 echo *_trace.txt
 echo voice_tmp/
+echo.
+echo REM Ed25519 私钥与TOFU记录：绝不能提交
+echo .lt_identity.key
+echo .lt_known_pubs.json
 ) > .gitignore
 echo   .gitignore updated
 

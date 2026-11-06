@@ -19,3 +19,7 @@ err_*.txt
 out_*.txt
 *_trace.txt
 voice_tmp/
+
+# Ed25519 身份私钥与 TOFU 信任记录：绝不能提交，否则私钥泄露
+.lt_identity.key
+.lt_known_pubs.json
